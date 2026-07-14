@@ -36,13 +36,6 @@ The host `/Users` directory is available inside the VM via virtiofs:
 msl --exec "mount -t virtiofs MacShare /mnt"
 ```
 
-## Release workflow
-
-```bash
-# Bump version in Sources/Setup.swift
-make homebrew-upload   # tags, pushes, updates tap
-```
-
 ## Build from source
 
 ```bash
