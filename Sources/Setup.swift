@@ -64,14 +64,8 @@ func ensureSetup() throws {
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
 
     if let msld = msldPath {
-        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/usr/local/bin", withIntermediateDirectories: true)
-        do {
-            try FileManager.default.copyItem(atPath: msld, toPath: "\(tmpdir)/usr/local/bin/msld")
-            shell("chmod +x '\(tmpdir)/usr/local/bin/msld'")
-            print("  -> msld daemon embedded")
-        } catch {
-            print("  warning: failed to embed msld: \(error.localizedDescription)")
-        }
+        shell("mkdir -p '\(tmpdir)/usr/local/bin' && cp -L '\(msld)' '\(tmpdir)/usr/local/bin/msld' && chmod +x '\(tmpdir)/usr/local/bin/msld'")
+        print("  -> msld daemon embedded")
     } else {
         print("  warning: msld binary not found, guest daemon won't be available")
     }
