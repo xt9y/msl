@@ -64,9 +64,14 @@ func ensureSetup() throws {
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
 
     if let msld = msldPath {
-        try FileManager.default.copyItem(atPath: msld, toPath: "\(tmpdir)/usr/local/bin/msld")
-        shell("chmod +x '\(tmpdir)/usr/local/bin/msld'")
-        print("  -> msld daemon embedded")
+        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/usr/local/bin", withIntermediateDirectories: true)
+        do {
+            try FileManager.default.copyItem(atPath: msld, toPath: "\(tmpdir)/usr/local/bin/msld")
+            shell("chmod +x '\(tmpdir)/usr/local/bin/msld'")
+            print("  -> msld daemon embedded")
+        } catch {
+            print("  warning: failed to embed msld: \(error.localizedDescription)")
+        }
     } else {
         print("  warning: msld binary not found, guest daemon won't be available")
     }
@@ -209,7 +214,7 @@ func ensureSetup() throws {
     print("\nSetup complete.\n")
 }
 
-let MSLVersion = "1.0.4"
+let MSLVersion = "1.0.5"
 
 func setupDataDir() -> String {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
