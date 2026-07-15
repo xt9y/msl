@@ -116,7 +116,7 @@ func ensureSetup() throws {
 
     [Service]
     Type=oneshot
-    ExecStart=/bin/sh -c 'pacman-key --init && pacman-key --populate archlinuxarm && touch /var/lib/msl-pacman-key.done'
+    ExecStart=/bin/sh -c 'pacman-key --init && pacman -Sy --noconfirm archlinuxarm-keyring && pacman-key --populate archlinuxarm && pacman -Syy && touch /var/lib/msl-pacman-key.done'
     RemainAfterExit=yes
 
     [Install]
@@ -209,7 +209,7 @@ func ensureSetup() throws {
     print("\nSetup complete.\n")
 }
 
-let MSLVersion = "1.0.2"
+let MSLVersion = "1.0.3"
 
 func setupDataDir() -> String {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
