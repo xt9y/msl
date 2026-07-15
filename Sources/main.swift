@@ -12,6 +12,12 @@ func restoreTerminal() {
 }
 
 func runShell() {
+    let state = DaemonState(dataDir: dataDir)
+    guard state.isRunning() else {
+        fputs("msl: daemon not running — start with 'msl start'\n", stderr)
+        exit(1)
+    }
+
     signal(SIGPIPE, SIG_IGN)
     let sock = socket(AF_UNIX, SOCK_STREAM, 0)
     guard sock >= 0 else { fputs("msl: socket error\n", stderr); exit(1) }
@@ -25,7 +31,10 @@ func runShell() {
     let rc = withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, socklen_t(addrSize)) }
     }
-    guard rc == 0 else { fputs("msl: not running — start with 'msl start'\n", stderr); exit(1) }
+    if rc != 0 {
+        fputs("msl: shell not ready yet — VM may still be booting\n", stderr)
+        exit(1)
+    }
 
     var ok: UInt8 = 0
     var okReceived = false
