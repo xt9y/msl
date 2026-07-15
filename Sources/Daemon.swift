@@ -72,7 +72,7 @@ class Daemon {
         if checkExit == 0 { return }
         print("Initializing pacman keyring (first-boot)...")
         fflush(stdout)
-        let cmd = "pacman-key --init && pacman -Sy --noconfirm archlinuxarm-keyring && pacman-key --populate archlinuxarm && pacman -Syy && touch \(marker)"
+        let cmd = "rm -f /var/lib/pacman/db.lck && chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman -Sy --noconfirm archlinuxarm-keyring && pacman-key --populate archlinuxarm && pacman -Syy && touch \(marker)"
         let (out, code) = await vm.execOnGuest(cmd, timeout: 180)
         if code == 0 {
             print("  -> pacman keyring ready")
