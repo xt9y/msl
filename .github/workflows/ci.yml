@@ -14,22 +14,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache musl-cross (brew cellar)
-        id: cache-musl
-        uses: actions/cache@v4
-        with:
-          path: /opt/homebrew/Cellar/musl-cross
-          key: musl-cross-cellar-v1
-
-      - name: Install musl-cross (if not cached)
-        if: steps.cache-musl.outputs.cache-hit != 'true'
+      - name: Install musl-cross & build guest daemon
         run: |
-          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install filosottile/musl-cross/musl-cross
-
-      - name: Build guest daemon
-        run: |
-          aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          CC=/tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          if [ ! -x "$CC" ]; then
+            echo "Downloading musl cross-compiler (103MB)..."
+            curl -sL --connect-timeout 30 --max-time 180 \
+              'https://musl.cc/aarch64-linux-musl-cross.tgz' \
+              -o /tmp/musl-cross.tgz
+            tar xzf /tmp/musl-cross.tgz -C /tmp
+            rm -f /tmp/musl-cross.tgz
+          fi
+          "$CC" -static -Os -s -o build/msld Guest/msld.c
           file build/msld
 
       - name: Build host binary
@@ -54,25 +50,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache musl-cross (brew cellar)
-        id: cache-musl
-        uses: actions/cache@v4
-        with:
-          path: /opt/homebrew/Cellar/musl-cross
-          key: musl-cross-cellar-v1
-
-      - name: Install musl-cross (if not cached)
-        if: steps.cache-musl.outputs.cache-hit != 'true'
-        run: |
-          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
-          brew install filosottile/musl-cross/musl-cross
-
       - name: Install e2fsprogs
         run: brew install e2fsprogs
 
-      - name: Build guest daemon
+      - name: Install musl-cross & build guest daemon
         run: |
-          aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          CC=/tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          if [ ! -x "$CC" ]; then
+            echo "Downloading musl cross-compiler (103MB)..."
+            curl -sL --connect-timeout 30 --max-time 180 \
+              'https://musl.cc/aarch64-linux-musl-cross.tgz' \
+              -o /tmp/musl-cross.tgz
+            tar xzf /tmp/musl-cross.tgz -C /tmp
+            rm -f /tmp/musl-cross.tgz
+          fi
+          "$CC" -static -Os -s -o build/msld Guest/msld.c
 
       - name: Build host binary
         run: make
