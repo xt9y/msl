@@ -15,7 +15,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install musl cross-compiler
-        run: brew install filosottile/musl-cross/musl-cross || true
+        run: |
+          brew trust filosottile/musl-cross
+          brew install filosottile/musl-cross/musl-cross
 
       - name: Build guest daemon
         run: |
@@ -46,7 +48,8 @@ jobs:
 
       - name: Install musl cross-compiler & e2fsprogs
         run: |
-          brew install filosottile/musl-cross/musl-cross e2fsprogs || true
+          brew trust filosottile/musl-cross
+          brew install filosottile/musl-cross/musl-cross e2fsprogs
 
       - name: Build guest daemon
         run: |
