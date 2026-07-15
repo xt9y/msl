@@ -34,36 +34,41 @@ func shell(_ command: String) -> Int32 {
 
 /// Download a URL to a file with retry, resume, and sha256 verification.
 /// Throws on failure (checksum mismatch, download error, etc.).
-func downloadWithChecksum(url: String, to destPath: String, expectedSha256: String?) throws {
-    let maxRetries = 3
-    for attempt in 1...maxRetries {
-        if attempt == 1 {
-            print("  Downloading \(url)...")
-        } else {
-            print("  Retrying (\(attempt)/\(maxRetries))...")
+func downloadWithChecksum(urls: [String], to destPath: String, expectedSha256: String?) throws {
+    for (mirrorIndex, url) in urls.enumerated() {
+        if mirrorIndex > 0 {
+            print("  Trying mirror \(mirrorIndex + 1)/\(urls.count): \(url)")
         }
-        fflush(stdout)
-        let resumeFlag = attempt > 1 ? "-C -" : ""
-        let rc = shell("curl -Lsf --retry 3 --retry-delay 5 \(resumeFlag) -o '\(destPath)' '\(url)' 2>&1")
-        if rc != 0 {
-            try? FileManager.default.removeItem(atPath: destPath)
-            if attempt == maxRetries {
-                throw MslError("download failed after \(maxRetries) attempts: \(url)")
+        for attempt in 1...3 {
+            if attempt == 1 {
+                print("  Downloading \(url)...")
+            } else {
+                print("  Retrying (\(attempt)/3)...")
             }
-            continue
-        }
-        if let expected = expectedSha256 {
-            let actual = sha256File(destPath)
-            if actual != expected {
-                try? FileManager.default.removeItem(atPath: destPath)
-                if attempt == maxRetries {
-                    throw MslError("checksum mismatch: expected \(expected), got \(actual)")
+            fflush(stdout)
+            let resumeFlag = attempt > 1 ? "-C -" : ""
+            let rc = shell("curl -Lsf --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 300 \(resumeFlag) -o '\(destPath)' '\(url)' 2>&1")
+            if rc == 0 {
+                if let expected = expectedSha256 {
+                    let actual = sha256File(destPath)
+                    if actual == expected {
+                        print("  Checksum verified.")
+                        return
+                    }
+                    print("  checksum mismatch, trying next mirror")
+                    try? FileManager.default.removeItem(atPath: destPath)
+                    break
                 }
-                continue
+                return
             }
-            print("  Checksum verified.")
+            try? FileManager.default.removeItem(atPath: destPath)
+            if attempt == 3 {
+                if mirrorIndex == urls.count - 1 {
+                    throw MslError("download failed after all mirrors: \(url)")
+                }
+                print("  mirror failed, trying next...")
+            }
         }
-        return
     }
 }
 
@@ -144,12 +149,13 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     }
 
     let tarballPath = "\(tmpdir)/rootfs.tar.gz"
-    let tarballURL = "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
-    let sha256URL = "\(tarballURL).sha256"
+    let mirrors = [
+        "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+        "https://mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+        "https://eu.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
+    ]
+    let sha256URL = "\(mirrors[0]).sha256"
 
-    // Try to fetch the published sha256 checksum from the same origin.
-    // This guards against corruption/delivery errors but not against a
-    // compromised origin — a truly pinned hash would need manual updates.
     let expectedSha = (try? Data(contentsOf: URL(string: sha256URL)!))
         .flatMap { String(data: $0, encoding: .utf8) }
         .flatMap { $0.split(separator: " ").first.map(String.init) }
@@ -157,7 +163,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         fputs("  warning: could not fetch sha256 checksum — skipping integrity check\n", stderr)
     }
 
-    try downloadWithChecksum(url: tarballURL, to: tarballPath, expectedSha256: expectedSha)
+    try downloadWithChecksum(urls: mirrors, to: tarballPath, expectedSha256: expectedSha)
 
     print("  Extracting rootfs...")
     fflush(stdout)
@@ -315,8 +321,8 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         do {
             let kernelSha = sha256ForDeb(url: kernelDebURL)
             let modulesSha = sha256ForDeb(url: modulesDebURL)
-            try downloadWithChecksum(url: kernelDebURL, to: kernelDeb, expectedSha256: kernelSha)
-            try downloadWithChecksum(url: modulesDebURL, to: modulesDeb, expectedSha256: modulesSha)
+            try downloadWithChecksum(urls: [kernelDebURL], to: kernelDeb, expectedSha256: kernelSha)
+            try downloadWithChecksum(urls: [modulesDebURL], to: modulesDeb, expectedSha256: modulesSha)
             kernelVer = ver
             kernelDownloaded = true
             print("  Kernel \(ver) downloaded.")
