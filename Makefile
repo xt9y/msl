@@ -103,6 +103,6 @@ build-check:
 		-o $(PRODUCT) \
 		$(SWIFT_SRCS) $(OBJC_SRCS) || { echo "ERROR: build failed"; exit 1; }
 	@codesign --entitlements Resources/msl.entitlements --force --sign - $(PRODUCT) 2>/dev/null
-	@./$(PRODUCT) --version | head -1 | grep -q "msl" && echo "Binary OK (v$(VERSION_NEXT))" || { echo "ERROR: binary test failed"; exit 1; }
+	@./$(PRODUCT) version | head -1 | grep -q "msl" && echo "Binary OK (v$(VERSION_NEXT))" || { echo "ERROR: binary test failed"; exit 1; }
 
 .PHONY: all sign clean release build-check gen-version
