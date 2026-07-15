@@ -41,17 +41,14 @@ class MSLVM: NSObject {
             throw MslError("virtualization not supported on this Mac")
         }
 
-        print("  - boot loader..."); fflush(stdout)
         let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
         bootLoader.commandLine = "console=hvc0 root=/dev/vda rw init=/usr/lib/systemd/systemd"
 
-        print("  - disk..."); fflush(stdout)
         guard let disk = try? VZDiskImageStorageDeviceAttachment(url: diskURL, readOnly: false) else {
             throw MslError("failed to open disk image at \(diskPath)")
         }
         let storage = VZVirtioBlockDeviceConfiguration(attachment: disk)
 
-        print("  - config setup..."); fflush(stdout)
         let config = VZVirtualMachineConfiguration()
 
         let platform = VZGenericPlatformConfiguration()
@@ -63,25 +60,20 @@ class MSLVM: NSObject {
         config.memorySize = UInt64(vmConfig.ramSizeGB) * 1024 * 1024 * 1024
         config.storageDevices = [storage]
 
-        print("  - entropy..."); fflush(stdout)
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
-        print("  - network..."); fflush(stdout)
         let network = VZVirtioNetworkDeviceConfiguration()
         network.attachment = VZNATNetworkDeviceAttachment()
         config.networkDevices = [network]
 
-        print("  - vsock..."); fflush(stdout)
         vsock = MSLVSOCK(configuration: config)
 
-        print("  - virtiofs..."); fflush(stdout)
         let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: "MacShare")
         let shareURL = URL(fileURLWithPath: "/Users")
         let sharedDir = VZSharedDirectory(url: shareURL, readOnly: false)
         fsConfig.share = VZSingleDirectoryShare(directory: sharedDir)
         config.directorySharingDevices = [fsConfig]
 
-        print("  - serial..."); fflush(stdout)
         let serialPath = "/tmp/msl-serial.log"
         FileManager.default.createFile(atPath: serialPath, contents: nil)
         let serialFH = FileHandle(forWritingAtPath: serialPath) ?? FileHandle.standardError
@@ -92,18 +84,15 @@ class MSLVM: NSObject {
         )
         config.serialPorts = [serialPort]
 
-        print("  - validate..."); fflush(stdout)
         do {
             try config.validate()
         } catch {
             throw MslError("config invalid: \(error.localizedDescription)")
         }
 
-        print("  - create VM..."); fflush(stdout)
         vm = VZVirtualMachine(configuration: config, queue: .main)
         vm?.delegate = self
 
-        print("  - setVM..."); fflush(stdout)
         if let v = vm {
             vsock?.setVM(v)
         }
@@ -232,10 +221,10 @@ class MSLVM: NSObject {
 
 extension MSLVM: VZVirtualMachineDelegate {
     func virtualMachine(_ vm: VZVirtualMachine, didStopWithError error: Error) {
-        print("VM stopped: \(error.localizedDescription)")
+        mslLog("VM stopped: \(error.localizedDescription)")
     }
 
     func guestDidStop(_ vm: VZVirtualMachine) {
-        print("Guest OS stopped")
+        mslLog("Guest OS stopped")
     }
 }

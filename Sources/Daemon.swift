@@ -23,12 +23,12 @@ class Daemon {
     }
 
     func requestStop() {
-        mslLog("received shutdown signal, stopping...")
+        mslLog("received shutdown signal")
         Task {
             do {
                 try await vm.stop()
             } catch {
-                mslLog("vm.stop error during signal shutdown: \(error.localizedDescription)")
+                mslLog("vm.stop error: \(error.localizedDescription)")
             }
             shouldKeepRunning = false
             CFRunLoopStop(CFRunLoopGetMain())
@@ -45,34 +45,25 @@ class Daemon {
 
         ensureDisplayBridge()
 
-        print("[1/5] Creating VM configuration...")
-        fflush(stdout)
+        mslLog("booting VM")
         try vm.boot()
 
-        print("[2/5] Starting VM...")
-        fflush(stdout)
         do {
             try await vm.start()
         } catch {
             mslLog("vm.start failed: \(error.localizedDescription)")
-            print("vm.start failed: \(error.localizedDescription)")
             throw error
         }
 
-        print("Waiting for guest daemon (VSOCK port 9999)...")
         do {
             try await waitForGuest(timeout: 120)
         } catch {
             mslLog("waitForGuest failed: \(error.localizedDescription)")
-            print("waitForGuest failed: \(error.localizedDescription)")
             throw error
         }
 
-        print("VM ready")
-
+        mslLog("VM ready")
         await ensurePacmanKeyring()
-
-        print("Listening on \(dataDir)/msld.sock")
 
         try ipc.start { [weak self] requestData, send in
             self?.handleRequest(requestData, send: send)
@@ -90,19 +81,13 @@ class Daemon {
 
     private func ensurePacmanKeyring() async {
         let marker = "/var/lib/msl-pacman-key.done"
-        let (checkOut, checkExit) = await vm.execOnGuest("test -f \(marker)")
-        _ = checkOut
+        let (_, checkExit) = await vm.execOnGuest("test -f \(marker)")
         if checkExit == 0 { return }
-        print("Initializing pacman keyring (first-boot)...")
-        fflush(stdout)
+        mslLog("initializing pacman keyring")
         let cmd = "rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses; pacman -Syy && touch \(marker)"
         let (out, code) = await vm.execOnGuest(cmd, timeout: 180)
-        if code == 0 {
-            print("  -> pacman keyring ready")
-        } else {
-            let msg = "warning: pacman-key init failed (exit \(code)): \(String(data: out, encoding: .utf8) ?? "")"
-            print(msg)
-            mslLog(msg)
+        if code != 0 {
+            mslLog("pacman-key init failed (exit \(code)): \(String(data: out, encoding: .utf8) ?? "")")
         }
     }
 
@@ -205,7 +190,7 @@ class Daemon {
                 let n = read(fd, &buf, 4)
                 vm.closeVsock(handle: handle)
                 if n == 0 {
-                    print("  -> connected after \(attempts * 2)s"); fflush(stdout)
+                    mslLog("guest connected after \(attempts * 2)s")
                     return
                 }
                 attempts += 1
@@ -214,7 +199,7 @@ class Daemon {
                 lastError = error
                 attempts += 1
                 if attempts % 15 == 0 {
-                    print("  waiting... (\(attempts * 2)s elapsed)"); fflush(stdout)
+                    mslLog("waiting for guest... (\(attempts * 2)s)")
                 }
                 try await Task.sleep(nanoseconds: 2_000_000_000)
             }
@@ -245,9 +230,6 @@ class Daemon {
 
         case "status":
             handleStatus(send: send)
-
-        case "upgrade":
-            handleUpgrade(send: send)
 
         default:
             sendError(send, message: "unknown command: \(cmd)")
@@ -345,19 +327,6 @@ class Daemon {
         }
         sendExitCode(send, code: 0)
         sendDone(send)
-    }
-
-    private func handleUpgrade(send: @escaping (Data) -> Void) {
-        Task {
-            do {
-                let (out, code) = await vm.execOnGuest("pacman -Syu --noconfirm", timeout: 300)
-                if !out.isEmpty {
-                    sendOutput(send, data: out)
-                }
-                sendExitCode(send, code: code)
-                sendDone(send)
-            }
-        }
     }
 
     private func makeFrame(type: MessageType, payload: Data) -> Data {

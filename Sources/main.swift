@@ -14,7 +14,7 @@ func restoreTerminal() {
 func runShell() {
     signal(SIGPIPE, SIG_IGN)
     let sock = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard sock >= 0 else { print("error: socket"); exit(1) }
+    guard sock >= 0 else { fputs("msl: socket error\n", stderr); exit(1) }
     defer { close(sock) }
 
     var addr = sockaddr_un()
@@ -25,9 +25,8 @@ func runShell() {
     let rc = withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, socklen_t(addrSize)) }
     }
-    guard rc == 0 else { print("error: connect: \(String(cString: strerror(errno)))"); exit(1) }
+    guard rc == 0 else { fputs("msl: not running — start with 'msl --start'\n", stderr); exit(1) }
 
-    // Wait up to 30s for the OK byte from daemon
     var ok: UInt8 = 0
     var okReceived = false
     for _ in 0..<300 {
@@ -38,7 +37,7 @@ func runShell() {
             if n == 1 && ok == 1 { okReceived = true; break }
         }
     }
-    guard okReceived else { print("error: shell handshake failed"); exit(1) }
+    guard okReceived else { fputs("msl: shell handshake failed\n", stderr); exit(1) }
 
     let isTTY = isatty(STDIN_FILENO) == 1
     if isTTY {
@@ -51,7 +50,6 @@ func runShell() {
         raw.c_cflag |= tcflag_t(CS8)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
         needTerminalRestore = true
-        // Restore terminal on fatal signals so the user isn't left with a broken tty
         signal(SIGTERM) { _ in restoreTerminal(); exit(130) }
         signal(SIGINT) { _ in restoreTerminal(); exit(130) }
         signal(SIGHUP) { _ in restoreTerminal(); exit(129) }
@@ -92,23 +90,24 @@ func runShell() {
     restoreTerminal()
 }
 
-func printUsage() {
-    print("Usage: msl --start | --stop | --status | --exec <command> | --shell | --setup | --upgrade | --uninstall | --version")
+func printHelp() {
+    print("Usage: msl <command> [options]")
     print()
-    print("Options:")
-    print("  --start              Start the VM daemon (auto-setup if needed)")
-    print("  --exec <command>     Run a command in the VM")
-    print("  --shell              Open an interactive shell in the VM")
-    print("  --stop               Stop the VM")
-    print("  --status             Check VM status")
-    print("  --setup              Download and prepare the VM disk image (incl. XQuartz for GUI)")
-    print("    --disk-size N / -ds N    Disk image size in GB (default: 8)")
-    print("    --ram-size  N / -rs N    RAM size in GB (default: 2)")
-    print("    --cpu-cores N / -cc N    Number of vCPUs (default: 2)")
-    print("  --upgrade            Run pacman -Syu in the VM (update all guest packages)")
-    print("  --uninstall          Remove all msl data (~/.msl dir, ~GB of disk images)")
-    print("  --version            Print version info")
-    print("  --help               Show this help")
+    print("Commands:")
+    print("  start              Start the VM")
+    print("  stop               Stop the VM")
+    print("  status             Show VM status")
+    print("  shell              Open an interactive shell")
+    print("  exec <command>     Run a command in the VM")
+    print("  setup              Download and prepare the VM disk image")
+    print("  uninstall          Remove all msl data")
+    print("  version            Show version")
+    print("  help               Show this help")
+    print()
+    print("Setup options:")
+    print("  --disk-size N / -ds N    Disk image size in GB (default: 8)")
+    print("  --ram-size  N / -rs N    RAM size in GB (default: 2)")
+    print("  --cpu-cores N / -cc N    Number of vCPUs (default: 2)")
 }
 
 func parseSetupFlags(_ args: [String]) -> (Int, Int, Int) {
@@ -130,52 +129,78 @@ func parseSetupFlags(_ args: [String]) -> (Int, Int, Int) {
     return (diskSize, ramSize, cpuCores)
 }
 
+func startDaemonInBackground() {
+    let exe = CommandLine.arguments[0]
+    let task = Process()
+    task.launchPath = exe
+    task.arguments = ["--start-daemon"]
+    // Detach from terminal
+    task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+    task.standardError = FileHandle(forWritingAtPath: "/dev/null")
+    do {
+        try task.run()
+        print("msl \(MSLVersion) started (pid \(task.processIdentifier))")
+    } catch {
+        fputs("msl: failed to start daemon: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
+
 func main() {
     let args = CommandLine.arguments
 
     if args.count == 1 {
-        printUsage()
+        print("msl — macOS Subsystem for Linux")
+        print("Run 'msl help' for usage.")
         exit(0)
     }
 
-    switch args[1] {
-    case "--help", "-h":
-        printUsage()
+    // Allow -- prefix for compat, but prefer bare commands
+    var cmd = args[1]
+    if cmd.hasPrefix("--") { cmd = String(cmd.dropFirst(2)) }
 
-    case "--version", "-v":
+    switch cmd {
+    case "help", "-h":
+        printHelp()
+
+    case "version", "-v":
         print("msl \(MSLVersion)")
-        print("macOS Subsystem for Linux")
 
-    case "--setup":
+    case "setup":
         let (ds, rs, cc) = parseSetupFlags(args)
         do {
             try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
         } catch {
-            print("\(error.localizedDescription)")
+            fputs("\(error.localizedDescription)\n", stderr)
             mslLog("setup failed: \(error.localizedDescription)")
             exit(1)
         }
 
-    case "--start":
+    case "start":
         if !isSetupComplete() {
             let (ds, rs, cc) = parseSetupFlags(args)
-            print("First-time setup required. Downloading Arch Linux ARM...")
             do {
                 try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
             } catch {
-                print("\(error.localizedDescription)")
-                mslLog("setup failed: \(error.localizedDescription)")
+                fputs("\(error.localizedDescription)\n", stderr)
                 exit(1)
             }
         }
+        let state = DaemonState(dataDir: dataDir)
+        if state.isRunning() {
+            print("msl is already running (pid \(state.readPID() ?? 0))")
+            exit(0)
+        }
+        startDaemonInBackground()
 
+    case "--start-daemon":
+        // Internal: actual daemon loop (launched in background by 'start')
         let daemon = Daemon(dataDir: dataDir)
         DispatchQueue.main.async {
             Task {
                 do {
                     try await daemon.run()
                 } catch {
-                    print("error: \(error.localizedDescription)")
                     mslLog("daemon error: \(error.localizedDescription)")
                 }
                 CFRunLoopStop(CFRunLoopGetMain())
@@ -184,9 +209,9 @@ func main() {
         CFRunLoopRun()
         exit(0)
 
-    case "--exec":
+    case "exec":
         guard args.count >= 3 else {
-            print("Usage: msl --exec <command>")
+            fputs("Usage: msl exec <command>\n", stderr)
             exit(1)
         }
         let command = args[2...].joined(separator: " ")
@@ -213,74 +238,46 @@ func main() {
             }
             exit(Int32(exitCode))
         } catch {
-            print("error: \(error.localizedDescription)")
-            mslLog("exec failed: \(error.localizedDescription)")
+            fputs("msl: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
-    case "--shell":
+    case "shell":
         runShell()
 
-    case "--stop":
+    case "stop":
         let client = IPCClient(path: "\(dataDir)/msld.sock")
         do {
             let req: [String: Any] = ["cmd": "stop"]
             let reqData = try JSONSerialization.data(withJSONObject: req)
             _ = try client.send(request: reqData)
-            print("VM stopped")
         } catch {
-            print("error: \(error.localizedDescription)")
-            mslLog("stop failed: \(error.localizedDescription)")
+            fputs("msl: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
-    case "--status":
+    case "status":
         let state = DaemonState(dataDir: dataDir)
         if state.isRunning() {
-            print("msld is running (pid \(state.readPID() ?? 0))")
+            print("running (pid \(state.readPID() ?? 0))")
         } else {
-            print("msld is not running")
+            print("stopped")
         }
 
-    case "--upgrade":
-        let client = IPCClient(path: "\(dataDir)/msld.sock")
-        do {
-            let req: [String: Any] = ["cmd": "upgrade"]
-            let reqData = try JSONSerialization.data(withJSONObject: req)
-            let messages = try client.send(request: reqData)
-            for msg in messages {
-                switch msg.type {
-                case .output:
-                    FileHandle.standardOutput.write(msg.data)
-                case .error:
-                    FileHandle.standardError.write(msg.data)
-                case .exitCode, .done:
-                    break
-                }
-            }
-        } catch {
-            print("error: \(error.localizedDescription)")
-            mslLog("upgrade failed: \(error.localizedDescription)")
-            exit(1)
-        }
-
-    case "--uninstall":
+    case "uninstall":
         let d = setupDataDir()
-        print("Removing msl data directory: \(d)")
         do {
             try FileManager.default.removeItem(atPath: d)
-            print("Done. ~/.msl removed.")
-            print("To remove the msl binary: brew uninstall msl msld")
-            print("To remove the tap: brew untap xt9y/msl")
+            print("Removed \(d)")
+            print("Run 'brew uninstall msl msld' to remove the binaries.")
         } catch {
-            print("error: \(error.localizedDescription)")
+            fputs("msl: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
     default:
-        print("Unknown option: \(args[1])")
-        print()
-        printUsage()
+        fputs("msl: unknown command '\(args[1])'\n", stderr)
+        fputs("Run 'msl help' for usage.\n", stderr)
         exit(1)
     }
 }

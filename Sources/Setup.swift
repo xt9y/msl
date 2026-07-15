@@ -27,17 +27,19 @@ func shell(_ command: String) -> Int32 {
 func downloadWithChecksum(url: String, to destPath: String, expectedSha256: String?) throws {
     let maxRetries = 3
     for attempt in 1...maxRetries {
-        print("  Downloading (attempt \(attempt)/\(maxRetries))... \(url)")
+        if attempt == 1 {
+            print("  Downloading \(url)...")
+        } else {
+            print("  Retrying (\(attempt)/\(maxRetries))...")
+        }
         fflush(stdout)
         let resumeFlag = attempt > 1 ? "-C -" : ""
         let rc = shell("curl -Lsf --retry 3 --retry-delay 5 \(resumeFlag) -o '\(destPath)' '\(url)' 2>&1")
         if rc != 0 {
             try? FileManager.default.removeItem(atPath: destPath)
             if attempt == maxRetries {
-                throw MslError("failed to download \(url) after \(maxRetries) attempts (curl exit \(rc))")
+                throw MslError("download failed after \(maxRetries) attempts: \(url)")
             }
-            print("  -> attempt \(attempt) failed, retrying...")
-            fflush(stdout)
             continue
         }
         if let expected = expectedSha256 {
@@ -45,13 +47,11 @@ func downloadWithChecksum(url: String, to destPath: String, expectedSha256: Stri
             if actual != expected {
                 try? FileManager.default.removeItem(atPath: destPath)
                 if attempt == maxRetries {
-                    throw MslError("checksum mismatch for \(url)\n  expected: \(expected)\n  got:      \(actual)")
+                    throw MslError("checksum mismatch: expected \(expected), got \(actual)")
                 }
-                print("  -> checksum mismatch, retrying...")
-                fflush(stdout)
                 continue
             }
-            print("  -> checksum verified")
+            print("  Checksum verified.")
         }
         return
     }
@@ -74,16 +74,12 @@ func sha256File(_ path: String) -> String {
 /// Check available disk space. Throws if less than `requiredGB` GB is free.
 func checkDiskSpace(requiredGB: Int) throws {
     var fs = statfs()
-    guard statfs("/Users", &fs) == 0 else {
-        print("  warning: could not check disk space")
-        return
-    }
+    guard statfs("/Users", &fs) == 0 else { return }
     let freeBytes = UInt64(fs.f_bavail) * UInt64(fs.f_bsize)
     let freeGB = Int(freeBytes / (1024 * 1024 * 1024))
     if freeGB < requiredGB {
         throw MslError("insufficient disk space: \(requiredGB)GB required, \(freeGB)GB available")
     }
-    print("  -> \(freeGB)GB free (requires \(requiredGB)GB)")
 }
 
 struct VMConfig: Codable {
@@ -120,7 +116,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     if fileExists(kernelPath) && isValidExt4(diskPath) { return }
 
-    print("msl first-time setup\n")
+    print("msl setup\n")
 
     try checkDiskSpace(requiredGB: diskSizeGB + 2)
 
@@ -144,13 +140,15 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     print("  Extracting rootfs...")
     fflush(stdout)
-    let tarResult = shell("tar xzf '\(tarballPath)' -C '\(tmpdir)' 2>&1")
-    print("  -> tar exit: \(tarResult)")
+    _ = shell("tar xzf '\(tarballPath)' -C '\(tmpdir)' 2>&1")
     let fileCount = (try? FileManager.default.subpathsOfDirectory(atPath: tmpdir).count) ?? 0
-    print("  -> \(fileCount) files extracted")
+    if fileCount < 10 {
+        throw MslError("rootfs extraction failed (only \(fileCount) files)")
+    }
     try? FileManager.default.removeItem(atPath: tarballPath)
 
     print("  Configuring system...")
+    fflush(stdout)
     // Root is intentionally passwordless for this local dev VM — the VM
     // runs on the host's Virtualization.framework with VSOCK-only access
     // (no network login). Users who want network SSH should set a password.
@@ -181,9 +179,9 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     if let msld = msldPath {
         shell("mkdir -p '\(tmpdir)/usr/local/bin' && cp -L '\(msld)' '\(tmpdir)/usr/local/bin/msld' && chmod +x '\(tmpdir)/usr/local/bin/msld'")
-        print("  -> msld daemon embedded")
+        print("  msld daemon embedded.")
     } else {
-        print("  warning: msld binary not found, guest daemon won't be available")
+        fputs("  warning: msld not found — run 'brew install msld' first\n", stderr)
     }
 
     // Script to load VSOCK modules before starting msld
@@ -241,7 +239,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     shell("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-pacman-key.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-pacman-key.service'")
     shell("mkdir -p '\(tmpdir)/var/lib'")
 
-    print("  Adding VSOCK kernel...")
+    print("  Adding kernel...")
     fflush(stdout)
 
     // Try multiple kernel versions — Ubuntu rotates point releases out of
@@ -264,7 +262,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
            shell("curl -Lsf --retry 3 --retry-delay 5 -o '\(modulesDeb)' '\(modulesDebURL)' 2>&1") == 0 {
             kernelVer = ver
             kernelDownloaded = true
-            print("  -> Ubuntu \(ver) kernel downloaded")
+            print("  Kernel \(ver) downloaded.")
             break
         }
     }
@@ -273,10 +271,10 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         shell("mkdir -p '\(tmpdir)/deb-kernel' && cd '\(tmpdir)/deb-kernel' && \(ar) x '\(kernelDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(tmpdir)' 2>/dev/null; done")
         try? FileManager.default.removeItem(atPath: kernelDeb)
         let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
-        let rc = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null && echo KERNEL_OK || echo KERNEL_FAIL")
-        print("  -> Ubuntu \(kernelVer) kernel (\(rc))")
+        _ = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null && echo KERNEL_OK || echo KERNEL_FAIL")
+        print("  Kernel \(kernelVer) extracted.")
     } else {
-        print("  warning: failed to download VSOCK kernel, falling back to Arch ARM kernel")
+        fputs("  warning: VSOCK kernel unavailable, using Arch ARM fallback\n", stderr)
         try? FileManager.default.removeItem(atPath: kernelDeb)
         let kernelNames = ["/boot/Image", "/boot/vmlinuz-linux-aarch64", "/boot/vmlinuz-linux", "/boot/Image.gz"]
         var kernelSrc: String?
@@ -289,7 +287,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
             throw MslError("no kernel found in rootfs /boot/")
         }
         shell("cp '\(tmpdir)\(kernel)' '\(kernelPath)' 2>/dev/null")
-        print("  -> kernel extracted from \(kernel)")
+        print("  Kernel extracted from \(kernel).")
     }
 
     let vsockModules = kernelDownloaded
@@ -328,7 +326,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         try "0\n".write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.dep.bin", atomically: true, encoding: .utf8)
         let conf = "vsock\nvmw_vsock_virtio_transport\n"
         try? conf.write(toFile: "\(tmpdir)/etc/modules-load.d/vsock.conf", atomically: true, encoding: .utf8)
-        print("  -> VSOCK kernel modules installed")
+        print("  Kernel modules installed.")
     }
 
     // Only chmod the specific files we need to be readable; avoid blanket +r
@@ -341,12 +339,12 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     guard shell(cmd) == 0 else {
         throw MslError("failed to create disk image")
     }
-    print("  -> \(diskPath)")
+    print("  Disk image: \(diskPath)")
 
     let config = VMConfig(diskSizeGB: diskSizeGB, ramSizeGB: ramSizeGB, cpuCores: cpuCores)
     config.save(to: dataDir)
 
-    print("\nSetup complete.\n")
+    print("\nDone. Run 'msl start' to boot the VM.\n")
 }
 
 func setupDataDir() -> String {
@@ -400,7 +398,7 @@ private func findMke2fs() -> String? {
 
 private func ensureMke2fs() throws -> String {
     if let p = findMke2fs() { return p }
-    print("  Installing e2fsprogs (needed to create disk image)...")
+    print("  Installing e2fsprogs...")
     fflush(stdout)
     shell("brew install e2fsprogs 2>/dev/null")
     if let p = findMke2fs() { return p }
@@ -432,17 +430,17 @@ func ensureDisplayBridge() {
 
     // Ensure socat is installed
     if shell("which socat >/dev/null 2>&1") != 0 {
-        print("  Installing socat (for X11 TCP bridge)...")
+        print("  Installing socat...")
         fflush(stdout)
         shell("brew install socat 2>/dev/null")
     }
     if shell("which socat >/dev/null 2>&1") != 0 {
-        print("  warning: socat not found — GUI apps won't display")
+        fputs("  warning: socat not found — GUI apps won't display\n", stderr)
         return
     }
 
     shell("nohup socat TCP-LISTEN:6000,reuseaddr,fork UNIX-CONNECT:\(x11Socket) >/dev/null 2>&1 &")
-    print("  -> X11 TCP bridge started (port 6000)")
+    print("  X11 bridge started (port 6000).")
 }
 
 private func ensureXQuartz() {
