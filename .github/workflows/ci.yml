@@ -14,13 +14,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install musl cross-compiler
+      - name: Install musl cross-compiler & build guest daemon
         run: |
           curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
-          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-
-      - name: Build guest daemon
-        run: |
+          export PATH="/tmp/aarch64-linux-musl-cross/bin:$PATH"
           aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
           file build/msld
 
@@ -46,14 +43,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install musl cross-compiler & e2fsprogs
+      - name: Install musl cross-compiler, e2fsprogs & build guest daemon
         run: |
           curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
-          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+          export PATH="/tmp/aarch64-linux-musl-cross/bin:$PATH"
           brew install e2fsprogs
-
-      - name: Build guest daemon
-        run: |
           aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
 
       - name: Build host binary
