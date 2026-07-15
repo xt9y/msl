@@ -5,8 +5,8 @@ PRODUCT = $(BUILD_DIR)/msl
 VERSION_FILE = Sources/Version.swift
 
 # VERSION is auto-generated from the latest git tag.
-# Falls back to 0.0.0-dev if no tags exist.
-VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+# Falls back to 0.0.0-dev if no tags exist (e.g. fresh clone in CI).
+VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0-dev")
 VERSION_NEXT := $(shell IFS='.' read -r MAJOR MINOR PATCH <<< "$(VERSION)" && echo "$${MAJOR}.$${MINOR}.$$((PATCH + 1))")
 
 SWIFT_SRCS = \
@@ -23,11 +23,14 @@ OBJC_HEADER = Sources/BridgingHeader.h
 
 all: sign
 
-# Generate Version.swift with the build version, then compile.
-$(PRODUCT): $(SWIFT_SRCS) $(OBJC_SRCS)
-	@mkdir -p $(BUILD_DIR)
+# Generate Version.swift before compiling. This is a phony target so it
+# always runs and regenerates the file with the correct version.
+gen-version:
 	@echo 'import Foundation' > $(VERSION_FILE)
 	@echo 'let MSLVersion = "$(VERSION)"' >> $(VERSION_FILE)
+
+$(PRODUCT): gen-version $(filter-out Sources/Version.swift,$(SWIFT_SRCS)) $(OBJC_SRCS)
+	@mkdir -p $(BUILD_DIR)
 	$(SWIFTC) $(SWIFT_FLAGS) \
 		-import-objc-header $(OBJC_HEADER) \
 		-o $@ \
@@ -94,6 +97,7 @@ release: build-check
 build-check:
 	@echo 'import Foundation' > $(VERSION_FILE)
 	@echo 'let MSLVersion = "$(VERSION_NEXT)"' >> $(VERSION_FILE)
+	@mkdir -p $(BUILD_DIR)
 	@$(SWIFTC) $(SWIFT_FLAGS) \
 		-import-objc-header $(OBJC_HEADER) \
 		-o $(PRODUCT) \
@@ -101,4 +105,4 @@ build-check:
 	@codesign --entitlements Resources/msl.entitlements --force --sign - $(PRODUCT) 2>/dev/null
 	@./$(PRODUCT) --version | head -1 | grep -q "msl" && echo "Binary OK (v$(VERSION_NEXT))" || { echo "ERROR: binary test failed"; exit 1; }
 
-.PHONY: all sign clean release build-check
+.PHONY: all sign clean release build-check gen-version
