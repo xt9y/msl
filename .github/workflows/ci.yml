@@ -87,6 +87,14 @@ jobs:
           ./build/msl start
         timeout-minutes: 5
 
+      - name: Upload daemon log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-log
+          path: /tmp/msl-daemon.log
+          retention-days: 7
+
       - name: "Test exec: basic command"
         run: |
           result=$(./build/msl exec "uname -a" 2>&1)
