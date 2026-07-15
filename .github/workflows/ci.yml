@@ -73,9 +73,6 @@ jobs:
       - name: Install e2fsprogs
         run: brew install e2fsprogs
 
-      - name: Build host binary
-        run: make
-
       - name: Run setup
         run: |
           echo "--- Setup ---"
