@@ -5,7 +5,7 @@ Run Arch Linux ARM on macOS using Apple's [Virtualization.framework](https://dev
 ## Install
 
 ```bash
-brew tap xt9y/msl
+brew tap xt9y/MSL
 brew install msl
 ```
 
@@ -60,7 +60,7 @@ Requires: Xcode 15+, Xcode Command Line Tools, and `aarch64-linux-musl-gcc` (for
 ```bash
 msl uninstall            # removes ~/.msl (disk images, kernel, config)
 brew uninstall msl msld  # removes the binaries
-brew untap xt9y/msl      # removes the tap
+brew untap xt9y/MSL      # removes the tap
 ```
 
 ## License
