@@ -14,21 +14,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache musl cross-compiler
-        id: cache-musl
-        uses: actions/cache@v4
-        with:
-          path: /tmp/aarch64-linux-musl-cross
-          key: musl-cross-v1
-
-      - name: Install musl cross-compiler
-        if: steps.cache-musl.outputs.cache-hit != 'true'
+      - name: Install & build guest daemon
         run: |
-          curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
-
-      - name: Build guest daemon
-        run: |
-          /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          CC=/tmp/musl/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          if [ ! -x "$CC" ]; then
+            mkdir -p /tmp/musl
+            curl -sfL 'https://musl.cc/aarch64-linux-musl-cross.tgz' -o /tmp/musl/cross.tgz
+            tar xzf /tmp/musl/cross.tgz -C /tmp/musl
+          fi
+          "$CC" -static -Os -s -o build/msld Guest/msld.c
           file build/msld
 
       - name: Build host binary
@@ -53,22 +47,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache musl cross-compiler
-        id: cache-musl
-        uses: actions/cache@v4
-        with:
-          path: /tmp/aarch64-linux-musl-cross
-          key: musl-cross-v1
-
-      - name: Install musl cross-compiler
-        if: steps.cache-musl.outputs.cache-hit != 'true'
+      - name: Install musl cross-compiler, e2fsprogs & build guest daemon
         run: |
-          curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
-
-      - name: Install e2fsprogs & build guest daemon
-        run: |
+          CC=/tmp/musl/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          if [ ! -x "$CC" ]; then
+            mkdir -p /tmp/musl
+            curl -sfL 'https://musl.cc/aarch64-linux-musl-cross.tgz' -o /tmp/musl/cross.tgz
+            tar xzf /tmp/musl/cross.tgz -C /tmp/musl
+          fi
           brew install e2fsprogs
-          /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          "$CC" -static -Os -s -o build/msld Guest/msld.c
 
       - name: Build host binary
         run: make
