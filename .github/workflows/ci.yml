@@ -14,27 +14,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache musl-cross toolchain
-        id: cache-musl
+      - name: Cache zig toolchain
+        id: cache-zig
         uses: actions/cache@v4
         with:
-          path: /tmp/aarch64-linux-musl-cross
-          key: musl-cross-2024
+          path: /tmp/zig-macos-aarch64-0.14.0
+          key: zig-0.14.0
 
-      - name: Install musl-cross (if not cached)
-        if: steps.cache-musl.outputs.cache-hit != 'true'
+      - name: Download zig (if not cached)
+        if: steps.cache-zig.outputs.cache-hit != 'true'
         run: |
-          echo "Downloading musl cross-compiler (103MB)..."
-          curl -sL --connect-timeout 60 --max-time 600 \
-            'http://musl.cc/aarch64-linux-musl-cross.tgz' \
-            -o /tmp/musl-cross.tgz
-          tar xzf /tmp/musl-cross.tgz -C /tmp
-          rm -f /tmp/musl-cross.tgz
-          file /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+          echo "Downloading zig 0.14.0 (45MB)..."
+          curl -sL --connect-timeout 30 --max-time 300 \
+            'https://ziglang.org/download/0.14.0/zig-macos-aarch64-0.14.0.tar.xz' \
+            -o /tmp/zig.tar.xz
+          tar xf /tmp/zig.tar.xz -C /tmp
+          rm -f /tmp/zig.tar.xz
+          /tmp/zig-macos-aarch64-0.14.0/zig version
 
       - name: Build guest daemon
         run: |
-          /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          /tmp/zig-macos-aarch64-0.14.0/zig cc \
+            -target aarch64-linux-musl -static -Os -s -o build/msld Guest/msld.c
           file build/msld
 
       - name: Build host binary
