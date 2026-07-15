@@ -14,19 +14,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install musl-cross & build guest daemon
+      - name: Cache musl-cross toolchain
+        id: cache-musl
+        uses: actions/cache@v4
+        with:
+          path: /tmp/aarch64-linux-musl-cross
+          key: musl-cross-2024
+
+      - name: Install musl-cross (if not cached)
+        if: steps.cache-musl.outputs.cache-hit != 'true'
         run: |
-          CC=/tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-          if [ ! -x "$CC" ]; then
-            echo "Downloading musl cross-compiler (103MB)..."
-            curl -sL --connect-timeout 30 --max-time 180 \
-              'https://musl.cc/aarch64-linux-musl-cross.tgz' \
-              -o /tmp/musl-cross.tgz
-            tar xzf /tmp/musl-cross.tgz -C /tmp
-            rm -f /tmp/musl-cross.tgz
-            file "$CC"
-          fi
-          "$CC" -static -Os -s -o build/msld Guest/msld.c
+          echo "Downloading musl cross-compiler (103MB)..."
+          curl -sL --connect-timeout 60 --max-time 600 \
+            'http://musl.cc/aarch64-linux-musl-cross.tgz' \
+            -o /tmp/musl-cross.tgz
+          tar xzf /tmp/musl-cross.tgz -C /tmp
+          rm -f /tmp/musl-cross.tgz
+          file /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+
+      - name: Build guest daemon
+        run: |
+          /tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
           file build/msld
 
       - name: Build host binary
@@ -35,11 +43,13 @@ jobs:
       - name: Verify binary runs
         run: ./build/msl version
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: msl-binary
-          path: build/msl
+          name: msl-build
+          path: |
+            build/msl
+            build/msld
           retention-days: 1
 
   integration:
@@ -51,21 +61,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: msl-build
+          path: build
+
+      - name: Make binaries executable
+        run: chmod +x build/msl build/msld
+
       - name: Install e2fsprogs
         run: brew install e2fsprogs
-
-      - name: Install musl-cross & build guest daemon
-        run: |
-          CC=/tmp/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-          if [ ! -x "$CC" ]; then
-            echo "Downloading musl cross-compiler (103MB)..."
-            curl -sL --connect-timeout 30 --max-time 180 \
-              'https://musl.cc/aarch64-linux-musl-cross.tgz' \
-              -o /tmp/musl-cross.tgz
-            tar xzf /tmp/musl-cross.tgz -C /tmp
-            rm -f /tmp/musl-cross.tgz
-          fi
-          "$CC" -static -Os -s -o build/msld Guest/msld.c
 
       - name: Build host binary
         run: make
