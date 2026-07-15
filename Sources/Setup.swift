@@ -136,7 +136,6 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     let tarballPath = "\(tmpdir)/rootfs.tar.gz"
     let tarballURL = "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
     let sha256URL = "\(tarballURL).sha256"
-    let sha256Path = "\(tmpdir)/rootfs.tar.gz.sha256"
 
     // Try to fetch the published sha256 checksum; if we get it, verify against it.
     let expectedSha = (try? Data(contentsOf: URL(string: sha256URL)!))
