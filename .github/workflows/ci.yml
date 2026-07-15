@@ -24,6 +24,7 @@ jobs:
               -o /tmp/musl-cross.tgz
             tar xzf /tmp/musl-cross.tgz -C /tmp
             rm -f /tmp/musl-cross.tgz
+            file "$CC"
           fi
           "$CC" -static -Os -s -o build/msld Guest/msld.c
           file build/msld
