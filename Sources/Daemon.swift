@@ -1,14 +1,14 @@
 import Foundation
 import Virtualization
 
-var globalDaemon: Daemon?
-
 class Daemon {
     let vm: MSLVM
-    let state: DaemonState
+    var state: DaemonState
     let ipc: IPCServer
     let dataDir: String
     var shouldKeepRunning = true
+    var sigSourceTerm: DispatchSourceSignal?
+    var sigSourceInt: DispatchSourceSignal?
 
     init(dataDir: String) {
         signal(SIGPIPE, SIG_IGN)
@@ -16,10 +16,6 @@ class Daemon {
         self.vm = MSLVM(dataDir: dataDir)
         self.state = DaemonState(dataDir: dataDir)
         self.ipc = IPCServer(path: "\(dataDir)/msld.sock")
-
-        globalDaemon = self
-        signal(SIGTERM) { _ in globalDaemon?.requestStop() }
-        signal(SIGINT) { _ in globalDaemon?.requestStop() }
     }
 
     func requestStop() {
@@ -39,6 +35,17 @@ class Daemon {
         if state.isRunning() {
             throw MslError("daemon already running (pid \(state.readPID() ?? 0))")
         }
+
+        // Signal-safe shutdown via DispatchSource (not raw signal handlers)
+        let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termSource.setEventHandler { [weak self] in self?.requestStop() }
+        termSource.activate()
+        sigSourceTerm = termSource
+
+        let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        intSource.setEventHandler { [weak self] in self?.requestStop() }
+        intSource.activate()
+        sigSourceInt = intSource
 
         try state.writePID()
         defer { state.removePID() }
@@ -266,9 +273,10 @@ class Daemon {
                     let deadline = Date().addingTimeInterval(totalBudgetSeconds)
                     var outBuf = [UInt8](repeating: 0, count: 65536)
                     var allOutput = Data()
-                    timedOut: while true {
+                    var timedOut = false
+                    commandLoop: while true {
                         let remaining = max(0.0, deadline.timeIntervalSinceNow)
-                        if remaining <= 0 { break timedOut }
+                        if remaining <= 0 { timedOut = true; break commandLoop }
                         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
                         let pollMs = Int32(min(remaining, 0.1) * 1000)
                         let pret = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, pollMs) }
@@ -282,6 +290,15 @@ class Daemon {
                         } else {
                             break
                         }
+                    }
+
+                    if timedOut {
+                        if !allOutput.isEmpty {
+                            self.sendOutput(send, data: allOutput)
+                        }
+                        self.sendExitCode(send, code: 255)
+                        self.sendDone(send)
+                        return
                     }
 
                     guard allOutput.count >= 4 else {

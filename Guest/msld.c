@@ -22,31 +22,38 @@
 static int       g_listen_fd  = -1;
 static int       g_client_fd  = -1;
 static char      g_display[64] = {0};
-static char      g_token[TOKEN_SIZE] = {0};
-static int       g_token_loaded = 0;
+static unsigned char g_token[TOKEN_SIZE] = {0};
+static int       g_token_bytes = 0;  /* 0 = not loaded, >0 = loaded with that many bytes */
 
 static void load_token(void) {
-    if (g_token_loaded) return;
-    g_token_loaded = 1;
+    if (g_token_bytes > 0) return;
     FILE *fp = fopen(TOKEN_FILE, "r");
-    if (!fp) return;
+    if (!fp) { g_token_bytes = -1; return; }
     size_t n = fread(g_token, 1, TOKEN_SIZE, fp);
-    (void)n;
     fclose(fp);
+    g_token_bytes = (n > 0) ? (int)n : -1;
+}
+
+/* constant-time comparison to avoid timing side-channels on the auth token */
+static int constant_time_cmp(const unsigned char *a, const unsigned char *b, size_t len) {
+    int diff = 0;
+    for (size_t i = 0; i < len; i++) diff |= (int)a[i] ^ (int)b[i];
+    return diff;
 }
 
 static int verify_token(int client_fd) {
     load_token();
-    if (g_token[0] == 0) return 1; /* no token file = no auth (backward compat) */
+    /* No token file = no auth (backward compat) */
+    if (g_token_bytes <= 0) return 1;
 
-    char recv_token[TOKEN_SIZE];
+    unsigned char recv_token[TOKEN_SIZE];
     ssize_t total = 0;
     while (total < TOKEN_SIZE) {
         ssize_t n = read(client_fd, recv_token + total, TOKEN_SIZE - total);
         if (n <= 0) return 0;
         total += n;
     }
-    return memcmp(g_token, recv_token, TOKEN_SIZE) == 0;
+    return constant_time_cmp(g_token, recv_token, TOKEN_SIZE) == 0;
 }
 
 static void probe_gateway(void) {
@@ -315,7 +322,20 @@ int main(void) {
             if (errno == EINTR) continue;
             break;
         }
-        serve_client(client_fd);
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(client_fd);
+            continue;
+        }
+        if (pid == 0) {
+            /* Child — serve this one connection then exit */
+            close(fd);
+            serve_client(client_fd);
+            close(client_fd);
+            _exit(0);
+        }
+        /* Parent — close the child's copy and go back to accepting */
         close(client_fd);
     }
 

@@ -154,14 +154,26 @@ func startDaemonInBackground() {
     let task = Process()
     task.launchPath = exe
     task.arguments = ["--start-daemon"]
-    // Detach from terminal
     task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
     task.standardError = FileHandle(forWritingAtPath: "/dev/null")
     do {
         try task.run()
-        print("msl \(MSLVersion) started (pid \(task.processIdentifier))")
     } catch {
         fputs("msl: failed to start daemon: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+
+    let childPID = task.processIdentifier
+    let state = DaemonState(dataDir: dataDir)
+    // Wait up to 5s for the child to write its PID file
+    for _ in 0..<50 {
+        if let pid = state.readPID(), pid == childPID { break }
+        usleep(100_000)
+    }
+    if let pid = state.readPID(), pid == childPID {
+        print("msl \(MSLVersion) started (pid \(childPID))")
+    } else {
+        fputs("msl: daemon failed to start — check /tmp/msl-daemon.log\n", stderr)
         exit(1)
     }
 }

@@ -135,8 +135,15 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     let tarballPath = "\(tmpdir)/rootfs.tar.gz"
     let tarballURL = "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
+    let sha256URL = "\(tarballURL).sha256"
+    let sha256Path = "\(tmpdir)/rootfs.tar.gz.sha256"
 
-    try downloadWithChecksum(url: tarballURL, to: tarballPath, expectedSha256: nil)
+    // Try to fetch the published sha256 checksum; if we get it, verify against it.
+    let expectedSha = (try? Data(contentsOf: URL(string: sha256URL)!))
+        .flatMap { String(data: $0, encoding: .utf8) }
+        .flatMap { $0.split(separator: " ").first.map(String.init) }
+
+    try downloadWithChecksum(url: tarballURL, to: tarballPath, expectedSha256: expectedSha)
 
     print("  Extracting rootfs...")
     fflush(stdout)
@@ -161,6 +168,8 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root/.gnupg", withIntermediateDirectories: true)
     let bashrc = "export HOME=/root\nexport TERM=xterm-256color\n"
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
+    let bashProfile = "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
+    try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
 
     // Generate a random auth token for VSOCK connections. Written to both
     // the host (~/.msl/token) and the guest rootfs (/etc/msld-token).
@@ -245,8 +254,10 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     // Try multiple kernel versions — Ubuntu rotates point releases out of
     // the archive, so a single hardcoded version will silently break.
     // We try the most recent known version first, then fall back.
-    let kernelVersions = [
-        "6.8.0-136-generic": "6.8.0-136.136",
+    let kernelVersions: [(String, String)] = [
+        ("6.8.0-141-generic", "6.8.0-141.144"),
+        ("6.8.0-139-generic", "6.8.0-139.142"),
+        ("6.8.0-136-generic", "6.8.0-136.136"),
     ]
     var kernelDownloaded = false
     var kernelVer = ""
