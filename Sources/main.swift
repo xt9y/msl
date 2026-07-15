@@ -209,7 +209,7 @@ func main() {
         printHelp()
 
     case "version":
-        print("msl \(MSLVersion)")
+        print("msl")
 
     case "setup":
         let (ds, rs, cc) = parseSetupFlags(args)

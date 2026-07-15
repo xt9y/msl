@@ -80,12 +80,6 @@ class MSLVM: NSObject {
 
         vsock = MSLVSOCK(configuration: config)
 
-        let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: "MacShare")
-        let shareURL = URL(fileURLWithPath: "/Users")
-        let sharedDir = VZSharedDirectory(url: shareURL, readOnly: false)
-        fsConfig.share = VZSingleDirectoryShare(directory: sharedDir)
-        config.directorySharingDevices = [fsConfig]
-
         let serialPath = "/tmp/msl-serial.log"
         FileManager.default.createFile(atPath: serialPath, contents: nil)
         let serialFH = FileHandle(forWritingAtPath: serialPath) ?? FileHandle.standardError

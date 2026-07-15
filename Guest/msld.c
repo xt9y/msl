@@ -241,7 +241,9 @@ shell_done:
         if (g_listen_fd > 2) close(g_listen_fd);
         if (client_fd > 2)   close(client_fd);
         if (g_display[0]) setenv("DISPLAY", g_display, 1);
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        char sourced_cmd[BUF_SIZE];
+        snprintf(sourced_cmd, sizeof(sourced_cmd), ". /root/.bashrc 2>/dev/null; exec %s", cmd);
+        execl("/bin/sh", "sh", "-c", sourced_cmd, (char *)NULL);
         _exit(127);
     }
 
