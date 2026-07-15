@@ -7,3 +7,5 @@ Guest/msld
 *.swo
 *~
 Sources/Version.swift
+.release.sh
+._release.sh
