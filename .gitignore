@@ -1,7 +1,8 @@
-.*
+.*.swp
 build/
 Guest/msld
 .DS_Store
+._*
 *.swp
 *.swo
 *~
