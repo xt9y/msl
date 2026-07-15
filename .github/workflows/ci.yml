@@ -17,8 +17,8 @@ jobs:
       - name: Build host binary
         run: make
 
-      - name: Verify --version compiles and runs
-        run: ./build/msl --version
+      - name: Verify binary compiles and runs
+        run: ./build/msl version
 
       - name: Build guest daemon
         run: |
