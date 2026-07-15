@@ -61,7 +61,7 @@ func ensureSetup() throws {
     try? FileManager.default.removeItem(atPath: "\(tmpdir)/etc/machine-id")
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root", withIntermediateDirectories: true)
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root/.gnupg", withIntermediateDirectories: true)
-    let bashrc = "export HOME=/root\nexport DISPLAY=:1\nexport TERM=dumb\n"
+    let bashrc = "export HOME=/root\nexport DISPLAY=:1\nexport TERM=xterm-256color\n"
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
 
     if let msld = msldPath {
@@ -116,7 +116,7 @@ func ensureSetup() throws {
 
     [Service]
     Type=oneshot
-    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring; pacman -Syy && touch /var/lib/msl-pacman-key.done'
+    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses; pacman -Syy && touch /var/lib/msl-pacman-key.done'
     RemainAfterExit=yes
 
     [Install]
