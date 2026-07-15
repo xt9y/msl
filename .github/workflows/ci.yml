@@ -16,8 +16,8 @@ jobs:
 
       - name: Install musl cross-compiler
         run: |
-          brew trust filosottile/musl-cross
-          brew install filosottile/musl-cross/musl-cross
+          curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
+          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
       - name: Build guest daemon
         run: |
@@ -48,8 +48,9 @@ jobs:
 
       - name: Install musl cross-compiler & e2fsprogs
         run: |
-          brew trust filosottile/musl-cross
-          brew install filosottile/musl-cross/musl-cross e2fsprogs
+          curl -sL 'https://musl.cc/aarch64-linux-musl-cross.tgz' | tar xz -C /tmp
+          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+          brew install e2fsprogs
 
       - name: Build guest daemon
         run: |
