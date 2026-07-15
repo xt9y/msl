@@ -61,7 +61,8 @@ class Daemon {
         startShellListener()
 
         while shouldKeepRunning {
-            try await Task.sleep(nanoseconds: NSEC_PER_SEC)
+            ensureDisplayBridge()
+            try await Task.sleep(nanoseconds: 30 * NSEC_PER_SEC)
         }
     }
 

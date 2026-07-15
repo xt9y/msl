@@ -61,7 +61,7 @@ func ensureSetup() throws {
     try? FileManager.default.removeItem(atPath: "\(tmpdir)/etc/machine-id")
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root", withIntermediateDirectories: true)
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root/.gnupg", withIntermediateDirectories: true)
-    let bashrc = "export HOME=/root\nexport DISPLAY=:1\nexport TERM=xterm-256color\n"
+    let bashrc = "export HOME=/root\nexport TERM=xterm-256color\n"
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
 
     if let msld = msldPath {
