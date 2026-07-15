@@ -34,6 +34,7 @@ jobs:
 
       - name: Build guest daemon
         run: |
+          mkdir -p build
           /tmp/zig-macos-aarch64-0.14.0/zig cc \
             -target aarch64-linux-musl -static -Os -s -o build/msld Guest/msld.c
           file build/msld
