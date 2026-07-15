@@ -1,4 +1,4 @@
-name: Build & Integration Test
+name: "Build & Integration Test"
 
 on:
   push:
@@ -61,63 +61,62 @@ jobs:
           ./build/msl setup --disk-size 6 --ram-size 2 --cpu-cores 2
         timeout-minutes: 15
 
-      - name: Boot VM
+      - name: "Boot VM"
         run: |
           echo "--- Starting VM ---"
           ./build/msl start
-          # startDaemonInBackground polls daemon.ready up to 120s
         timeout-minutes: 5
 
-      - name: Test exec: basic command
+      - name: "Test exec: basic command"
         run: |
           result=$(./build/msl exec "uname -a" 2>&1)
           echo "$result"
           echo "$result" | grep -q Linux || { echo "FAIL: uname -a did not contain Linux"; exit 1; }
           echo "PASS: uname -a"
 
-      - name: Test exec: shell pipe
+      - name: "Test exec: shell pipe"
         run: |
           result=$(./build/msl exec "echo hello | cat" 2>&1)
           echo "$result"
           echo "$result" | grep -q hello || { echo "FAIL: pipe"; exit 1; }
           echo "PASS: shell pipe"
 
-      - name: Test exec: system booted
+      - name: "Test exec: system booted"
         run: |
           result=$(./build/msl exec "cat /proc/1/comm" 2>&1)
           echo "$result"
           echo "$result" | grep -q systemd || { echo "FAIL: systemd not running"; exit 1; }
           echo "PASS: system booted"
 
-      - name: Test exec: package manager
+      - name: "Test exec: package manager"
         run: |
           result=$(./build/msl exec "pacman -Qi base 2>&1 | head -3" 2>&1)
           echo "$result"
           echo "$result" | grep -qi "name.*base" || { echo "FAIL: pacman"; exit 1; }
           echo "PASS: pacman"
 
-      - name: Test exec: exit code propagation
+      - name: "Test exec: exit code propagation"
         run: |
           ./build/msl exec "exit 42" 2>&1
           rc=$?
           [ $rc -eq 42 ] || { echo "FAIL: expected exit 42, got $rc"; exit 1; }
           echo "PASS: exit code 42"
 
-      - name: Test shell (non-interactive)
+      - name: "Test shell (non-interactive)"
         run: |
           result=$(echo "echo hello_shell; exit" | ./build/msl shell 2>&1)
           echo "$result"
           echo "$result" | grep -q hello_shell || { echo "FAIL: shell"; exit 1; }
           echo "PASS: shell (non-interactive)"
 
-      - name: Test status
+      - name: "Test status"
         run: |
           status=$(./build/msl status 2>&1)
           echo "$status"
           echo "$status" | grep -qi "running" || { echo "FAIL: expected running"; exit 1; }
           echo "PASS: status"
 
-      - name: Test exec after boot stress
+      - name: "Test exec after boot stress"
         run: |
           for i in 1 2 3 4 5; do
             result=$(./build/msl exec "echo concurrent_test_$i" 2>&1)
@@ -125,7 +124,7 @@ jobs:
           done
           echo "PASS: concurrent exec"
 
-      - name: Stop VM
+      - name: "Stop VM"
         run: |
           ./build/msl stop
           sleep 2
@@ -134,7 +133,7 @@ jobs:
           echo "$status" | grep -qi "stopped" || { echo "FAIL: expected stopped"; exit 1; }
           echo "PASS: stop"
 
-      - name: Restart and verify clean state
+      - name: "Restart and verify clean state"
         run: |
           ./build/msl start
           sleep 5
