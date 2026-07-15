@@ -1,4 +1,4 @@
-name: Build
+name: Build & Integration Test
 
 on:
   push:
@@ -12,16 +12,134 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # need full history for git describe --tags
+          fetch-depth: 0
+
+      - name: Install musl cross-compiler
+        run: brew install filosottile/musl-cross/musl-cross || true
+
+      - name: Build guest daemon
+        run: |
+          aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
+          file build/msld
 
       - name: Build host binary
         run: make
 
-      - name: Verify binary compiles and runs
+      - name: Verify binary runs
         run: ./build/msl version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msl-binary
+          path: build/msl
+          retention-days: 1
+
+  integration:
+    needs: build
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install musl cross-compiler & e2fsprogs
+        run: |
+          brew install filosottile/musl-cross/musl-cross e2fsprogs || true
 
       - name: Build guest daemon
         run: |
-          brew install filosottile/musl-cross/musl-cross || true
           aarch64-linux-musl-gcc -static -Os -s -o build/msld Guest/msld.c
-          file build/msld
+
+      - name: Build host binary
+        run: make
+
+      - name: Run setup
+        run: |
+          echo "--- Setup ---"
+          ./build/msl setup --disk-size 6 --ram-size 2 --cpu-cores 2
+        timeout-minutes: 15
+
+      - name: Boot VM
+        run: |
+          echo "--- Starting VM ---"
+          ./build/msl start
+          # startDaemonInBackground polls daemon.ready up to 120s
+        timeout-minutes: 5
+
+      - name: Test exec: basic command
+        run: |
+          result=$(./build/msl exec "uname -a" 2>&1)
+          echo "$result"
+          echo "$result" | grep -q Linux || { echo "FAIL: uname -a did not contain Linux"; exit 1; }
+          echo "PASS: uname -a"
+
+      - name: Test exec: shell pipe
+        run: |
+          result=$(./build/msl exec "echo hello | cat" 2>&1)
+          echo "$result"
+          echo "$result" | grep -q hello || { echo "FAIL: pipe"; exit 1; }
+          echo "PASS: shell pipe"
+
+      - name: Test exec: system booted
+        run: |
+          result=$(./build/msl exec "cat /proc/1/comm" 2>&1)
+          echo "$result"
+          echo "$result" | grep -q systemd || { echo "FAIL: systemd not running"; exit 1; }
+          echo "PASS: system booted"
+
+      - name: Test exec: package manager
+        run: |
+          result=$(./build/msl exec "pacman -Qi base 2>&1 | head -3" 2>&1)
+          echo "$result"
+          echo "$result" | grep -qi "name.*base" || { echo "FAIL: pacman"; exit 1; }
+          echo "PASS: pacman"
+
+      - name: Test exec: exit code propagation
+        run: |
+          ./build/msl exec "exit 42" 2>&1
+          rc=$?
+          [ $rc -eq 42 ] || { echo "FAIL: expected exit 42, got $rc"; exit 1; }
+          echo "PASS: exit code 42"
+
+      - name: Test shell (non-interactive)
+        run: |
+          result=$(echo "echo hello_shell; exit" | ./build/msl shell 2>&1)
+          echo "$result"
+          echo "$result" | grep -q hello_shell || { echo "FAIL: shell"; exit 1; }
+          echo "PASS: shell (non-interactive)"
+
+      - name: Test status
+        run: |
+          status=$(./build/msl status 2>&1)
+          echo "$status"
+          echo "$status" | grep -qi "running" || { echo "FAIL: expected running"; exit 1; }
+          echo "PASS: status"
+
+      - name: Test exec after boot stress
+        run: |
+          for i in 1 2 3 4 5; do
+            result=$(./build/msl exec "echo concurrent_test_$i" 2>&1)
+            echo "$result" | grep -q "concurrent_test_$i" || { echo "FAIL: concurrent test $i"; exit 1; }
+          done
+          echo "PASS: concurrent exec"
+
+      - name: Stop VM
+        run: |
+          ./build/msl stop
+          sleep 2
+          status=$(./build/msl status 2>&1)
+          echo "$status"
+          echo "$status" | grep -qi "stopped" || { echo "FAIL: expected stopped"; exit 1; }
+          echo "PASS: stop"
+
+      - name: Restart and verify clean state
+        run: |
+          ./build/msl start
+          sleep 5
+          result=$(./build/msl exec "echo after_restart" 2>&1)
+          echo "$result"
+          echo "$result" | grep -q after_restart || { echo "FAIL: restart"; exit 1; }
+          ./build/msl stop
+          echo "PASS: restart"

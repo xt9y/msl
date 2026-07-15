@@ -484,6 +484,9 @@ private func findXQuartzApp() -> String? {
 }
 
 func ensureDisplayBridge() {
+    // Skip in CI — no display server available
+    if ProcessInfo.processInfo.environment["CI"] != nil { return }
+
     // XQuartz only listens on a local Unix socket; the VM connects over TCP.
     // socat bridges TCP 6000 -> /tmp/.X11-unix/X0 so the guest can reach it.
     let x11Socket = "/tmp/.X11-unix/X0"
@@ -508,6 +511,9 @@ func ensureDisplayBridge() {
 }
 
 private func ensureXQuartz() {
+    // Skip in CI — no display server available
+    if ProcessInfo.processInfo.environment["CI"] != nil { return }
+
     if findXQuartzApp() == nil {
         print("  Installing XQuartz (for GUI display forwarding)...")
         fflush(stdout)
