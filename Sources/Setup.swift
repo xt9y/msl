@@ -209,7 +209,7 @@ func ensureSetup() throws {
     print("\nSetup complete.\n")
 }
 
-let MSLVersion = "1.0.1"
+let MSLVersion = "1.0.2"
 
 func setupDataDir() -> String {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
@@ -333,12 +333,41 @@ private func ensureXQuartz() {
     print("  warning: XQuartz started but xhost + failed — GUI apps may not display")
 }
 
+/// Resolve the real directory containing the msl binary, following symlinks and PATH.
+private func resolveSelfDir() -> String {
+    var selfPath = CommandLine.arguments[0]
+    if !selfPath.hasPrefix("/") {
+        let which = shellOutput("which \(selfPath) 2>/dev/null")
+        if !which.isEmpty { selfPath = which }
+    }
+    var st = stat()
+    if lstat(selfPath, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK {
+        if let resolved = try? Foundation.URL(resolvingAliasFileAt: URL(fileURLWithPath: selfPath)) {
+            selfPath = resolved.path
+        }
+    }
+    return (selfPath as NSString).deletingLastPathComponent
+}
+
+@discardableResult
+func shellOutput(_ command: String) -> String {
+    let task = Process()
+    task.launchPath = "/bin/bash"
+    task.arguments = ["-c", command]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.launch()
+    task.waitUntilExit()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
 private func findMsldBinary() -> String? {
-    let selfPath = CommandLine.arguments[0]
-    let selfDir = (selfPath as NSString).deletingLastPathComponent
+    let selfDir = resolveSelfDir()
     let candidates = [
         "\(selfDir)/msld",
         "\(selfDir)/../Guest/msld",
+        "\(selfDir)/../share/msl/msld",
         "\(FileManager.default.currentDirectoryPath)/Guest/msld",
         "\(FileManager.default.currentDirectoryPath)/build/msld",
     ]
@@ -352,14 +381,15 @@ private func findMsldBinary() -> String? {
     return nil
 }
 
-/// Find msld locally, or build it from Guest/msld.c if the cross_COMPILER is available.
+/// Find msld locally, build it from source, or download a pre-built binary.
 private func ensureMsldBinary() -> String? {
     if let p = findMsldBinary() { return p }
+
+    // Try building from source if the cross-compiler is available
     if shell("which aarch64-linux-musl-gcc >/dev/null 2>&1") == 0 {
         print("  Building guest daemon (msld)...")
         fflush(stdout)
-        let selfPath = CommandLine.arguments[0]
-        let selfDir = (selfPath as NSString).deletingLastPathComponent
+        let selfDir = resolveSelfDir()
         let outPath = "\(NSTemporaryDirectory())msld-\(UUID().uuidString)"
         let srcCandidates = [
             "\(selfDir)/../Guest/msld.c",
@@ -373,8 +403,23 @@ private func ensureMsldBinary() -> String? {
             }
         }
     }
-    print("  warning: msld binary not found and aarch64-linux-musl-gcc not available")
-    print("           install with: brew tap filosottile/musl-cross && brew install musl-cross --with-aarch64")
+
+    // Download pre-built msld from GitHub releases
+    print("  Downloading guest daemon (msld)...")
+    fflush(stdout)
+    let outPath = "\(NSTemporaryDirectory())msld-\(UUID().uuidString)"
+    let url = "https://github.com/xt9y/msl/releases/download/v\(MSLVersion)/msld"
+    let rc = shell("curl -Lsf -o '\(outPath)' '\(url)' 2>&1")
+    if rc == 0 {
+        var st = stat()
+        if stat(outPath, &st) == 0, st.st_size > 1000 {
+            print("  -> msld downloaded")
+            return outPath
+        }
+    }
+
+    print("  warning: could not obtain msld (build or download failed)")
+    print("           to build from source: brew tap filosottile/musl-cross && brew install musl-cross --with-aarch64")
     print("           then run: msl --setup again")
     return nil
 }
