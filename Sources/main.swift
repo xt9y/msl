@@ -111,7 +111,6 @@ func printHelp() {
     print("  shell              Open an interactive shell")
     print("  exec <command>     Run a command in the VM")
     print("  setup              Download and prepare the VM disk image")
-    print("  upgrade            Re-download kernel and rootfs (wipe + re-setup)")
     print("  uninstall          Remove all msl data")
     print("  version            Show version")
     print("  help               Show this help")
@@ -211,17 +210,6 @@ func main() {
 
     case "version":
         print("msl \(MSLVersion)")
-
-    case "upgrade":
-        let (ds, rs, cc) = parseSetupFlags(args)
-        do {
-            try? FileManager.default.removeItem(atPath: "\(dataDir)/kernel")
-            try? FileManager.default.removeItem(atPath: "\(dataDir)/arch.img")
-            try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
-        } catch {
-            fputs("msl: upgrade failed: \(error.localizedDescription)\n", stderr)
-            exit(1)
-        }
 
     case "setup":
         let (ds, rs, cc) = parseSetupFlags(args)

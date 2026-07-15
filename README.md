@@ -63,24 +63,6 @@ brew uninstall msl msld  # removes the binaries
 brew untap xt9y/msl      # removes the tap
 ```
 
-## Security
-
-- **Root is passwordless** inside the VM by design. The VM runs exclusively on
-  Apple's Virtualization.framework with VSOCK-only access from the host — there
-  is no network login, SSH daemon, or remote console. Users who enable SSH
-  should set a root password with `msl exec "passwd"`.
-- **VSOCK authentication** — every guest connection must present a random 32-byte
-  token written to `~/.msl/token` at setup time. The guest daemon (`msld`)
-  verifies it with a constant-time comparison to prevent timing side-channels.
-- **Concurrent connection limit** — the guest daemon caps forked children at 64
-  concurrent connections and reaps them via a `SIGCHLD` handler, preventing
-  both zombie accumulation and trivial DoS.
-- **Trust model** — `msl setup` downloads the rootfs from `archlinuxarm.org`
-  and the kernel from `ports.ubuntu.com`, verifying integrity against the
-  checksum published by each origin. This protects against transport
-  corruption but not against a compromised origin. Kernel/modules `.deb` files
-  are similarly verified against per-file SHA256 checksums when available.
-
 ## License
 
 MIT
