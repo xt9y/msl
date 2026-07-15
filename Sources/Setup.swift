@@ -610,8 +610,14 @@ func discoverKernelVersions() -> [(String, String)] {
         let rev = String(html[revRange])
         versions.append((ver, rev))
     }
-    // Sort by version descending (newest first) to try latest first
-    versions.sort { $0.0 > $1.0 }
+    // Sort by numeric build number descending (newest first) to try latest first.
+    // Lexicographic sort on "6.8.0-141-generic" vs "6.8.0-99-generic" would
+    // put 99 after 141 because '9' > '1'.
+    versions.sort { a, b in
+        let aNum = a.0.split(separator: "-").dropFirst().first.flatMap { Int($0) } ?? 0
+        let bNum = b.0.split(separator: "-").dropFirst().first.flatMap { Int($0) } ?? 0
+        return aNum > bNum
+    }
     return versions
 }
 
