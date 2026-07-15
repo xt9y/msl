@@ -406,6 +406,10 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     print("  Creating disk image (\(diskSizeGB)GB)...")
     fflush(stdout)
+    // Strip setuid/setgid bits and ensure readability — mke2fs on macOS
+    // cannot copy files with restricted permissions when running as
+    // a non-root user.
+    shell("chmod -R a-s,u+r '\(tmpdir)' 2>/dev/null || true")
     let cmd = "'\(mke2fs)' -t ext4 -d '\(tmpdir)' '\(diskPath)' \(diskSizeGB)G 2>&1"
     guard shell(cmd) == 0 else {
         throw MslError("failed to create disk image")
