@@ -274,17 +274,11 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     print("  Adding kernel...")
     fflush(stdout)
 
-    // Try multiple kernel versions — Ubuntu rotates point releases out of
-    // the archive, so a single hardcoded version will silently break.
-    // We first attempt to discover versions from the Ubuntu package index
-    // (auto-discovery), then fall back to a hardcoded list.
     func sha256ForDeb(url: String) -> String? {
-        // Try per-file checksum first
         if let data = try? Data(contentsOf: URL(string: "\(url).sha256")!),
            let str = String(data: data, encoding: .utf8) {
             return str.split(separator: " ").first.map(String.init)
         }
-        // Fall back: fetch SHA256SUMS from parent directory
         let base = url.dropLast(url.split(separator: "/").last?.count ?? 0)
         if let data = try? Data(contentsOf: URL(string: "\(base)SHA256SUMS")!),
            let str = String(data: data, encoding: .utf8) {
@@ -298,19 +292,19 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         return nil
     }
 
-    let kernelVersions: [(String, String)]
-    let discovered = discoverKernelVersions()
-    if !discovered.isEmpty {
-        kernelVersions = discovered
-    } else {
-        kernelVersions = [
-            ("6.8.0-145-generic", "6.8.0-145.149"),
-            ("6.8.0-141-generic", "6.8.0-141.144"),
-            ("6.8.0-139-generic", "6.8.0-139.142"),
-            ("6.8.0-136-generic", "6.8.0-136.136"),
-            ("6.8.0-101-generic", "6.8.0-101.104"),
-        ]
+    // Prefer known-working kernel versions (6.8.x from Ubuntu Noble, gzip raw format).
+    // Auto-discovery from the pool may pick newer kernels (6.17+, 7.x) that use
+    // PE32+ EFI format, which is incompatible with VZLinuxBootLoader.
+    let discovered = discoverKernelVersions().filter { ver, _ in
+        let parts = parseKernelVersion(ver)
+        // Only accept 6.8.x kernels (gzip raw format, known to work)
+        return parts.count >= 2 && parts[0] == 6 && parts[1] == 8
     }
+    let kernelVersions: [(String, String)] = !discovered.isEmpty ? discovered : [
+        ("6.8.0-53-generic", "6.8.0-53.55"),
+        ("6.8.0-51-generic", "6.8.0-51.53"),
+        ("6.8.0-45-generic", "6.8.0-45.47"),
+    ]
     var kernelDownloaded = false
     var kernelVer = ""
     let kernelDeb = "\(tmpdir)/kernel.deb"
@@ -320,7 +314,6 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     for (ver, pkgRev) in kernelVersions {
         let kernelDebURL = "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/linux-image-unsigned-\(ver)_\(pkgRev)_arm64.deb"
         let modulesDebURL = "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/linux-modules-\(ver)_\(pkgRev)_arm64.deb"
-
         do {
             let kernelSha = sha256ForDeb(url: kernelDebURL)
             let modulesSha = sha256ForDeb(url: modulesDebURL)
@@ -337,70 +330,53 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         }
     }
 
-    if kernelDownloaded {
-        shell("mkdir -p '\(tmpdir)/deb-kernel' && cd '\(tmpdir)/deb-kernel' && \(ar) x '\(kernelDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(tmpdir)' 2>/dev/null; done")
-        try? FileManager.default.removeItem(atPath: kernelDeb)
-        let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
-        _ = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null")
-        guard fileExists(kernelPath) else {
-            throw MslError("kernel extraction failed — \(kernelPath) is missing or empty")
-        }
-        print("  Kernel \(kernelVer) extracted.")
-    } else {
-        fputs("  warning: VSOCK kernel unavailable, using Arch ARM fallback\n", stderr)
-        try? FileManager.default.removeItem(atPath: kernelDeb)
-        let kernelNames = ["/boot/Image", "/boot/vmlinuz-linux-aarch64", "/boot/vmlinuz-linux", "/boot/Image.gz"]
-        var kernelSrc: String?
-        for name in kernelNames {
-            let full = "\(tmpdir)\(name)"
-            var st = stat()
-            if stat(full, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG { kernelSrc = name; break }
-        }
-        guard let kernel = kernelSrc else {
-            throw MslError("no kernel found in rootfs /boot/")
-        }
-        shell("cp '\(tmpdir)\(kernel)' '\(kernelPath)' 2>/dev/null")
-        print("  Kernel extracted from \(kernel).")
+    guard kernelDownloaded else {
+        throw MslError("failed to download kernel")
     }
-
-    let vsockModules = kernelDownloaded
-    if vsockModules {
-        shell("mkdir -p '\(tmpdir)/deb-modules' && cd '\(tmpdir)/deb-modules' && \(ar) x '\(modulesDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(tmpdir)' 2>/dev/null; done")
-        try? FileManager.default.removeItem(atPath: modulesDeb)
-        // Module extraction creates /lib as a real directory, breaking
-        // Arch ARM's merged-usr layout (/lib → usr/lib). Move modules
-        // under /usr/lib and restore /lib as a symlink.
-        shell("mkdir -p '\(tmpdir)/usr/lib/modules'")
-        shell("cp -r '\(tmpdir)/lib/modules/'* '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
-        shell("rm -rf '\(tmpdir)/lib'")
-        shell("ln -sf usr/lib '\(tmpdir)/lib'")
-        // Remove non-VSOCK modules to save space
-        shell("find '\(tmpdir)/usr/lib/modules' -type f -name '*.ko.xz' ! -name '*vsock*' ! -name '*virtio*' -delete 2>/dev/null")
-        shell("find '\(tmpdir)/usr/lib/modules' -type f -name '*.ko' ! -name '*vsock*' ! -name '*virtio*' -delete 2>/dev/null")
-        shell("find '\(tmpdir)/usr/lib/modules' -type f -name '*.ko.zst' ! -name '*vsock*' ! -name '*virtio*' -delete 2>/dev/null")
-        // Depmod can't run on macOS, so generate minimal modules.dep for VSOCK
-        let kver = kernelVer.isEmpty ? "6.8.0-136-generic" : kernelVer
-        let dep = """
-        kernel/net/vmw_vsock/vsock.ko.zst:
-        kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
-        kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.zst: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst
-        kernel/net/vmw_vsock/vsock.ko.zst
-        kernel/drivers/vhost/vhost_vsock.ko.zst: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst kernel/net/vmw_vsock/vsock.ko.zst
-        kernel/net/vmw_vsock/vsock_diag.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
-        kernel/net/vmw_vsock/vsock_loopback.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
-        kernel/drivers/net/vsockmon.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
-
-        """
-        try dep.write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.dep", atomically: true, encoding: .utf8)
-        // Also generate minimal modules.alias (empty is fine), modules.symbols, modules.softdep
-        try "\n".write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.alias", atomically: true, encoding: .utf8)
-        try "\n".write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.symbols", atomically: true, encoding: .utf8)
-        try "\n".write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.softdep", atomically: true, encoding: .utf8)
-        try "0\n".write(toFile: "\(tmpdir)/usr/lib/modules/\(kver)/modules.dep.bin", atomically: true, encoding: .utf8)
-        let conf = "vsock\nvmw_vsock_virtio_transport\n"
-        try? conf.write(toFile: "\(tmpdir)/etc/modules-load.d/vsock.conf", atomically: true, encoding: .utf8)
-        print("  Kernel modules installed.")
+    shell("mkdir -p '\(tmpdir)/deb-kernel' && cd '\(tmpdir)/deb-kernel' && \(ar) x '\(kernelDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(tmpdir)' 2>/dev/null; done")
+    try? FileManager.default.removeItem(atPath: kernelDeb)
+    let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
+    // Try gunzip decompression first (older kernels); fall back to direct copy (modern PE32+ EFI kernels)
+    _ = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null")
+    if !fileExists(kernelPath) {
+        _ = shell("cp '\(vmlinuz)' '\(kernelPath)' 2>/dev/null")
     }
+    guard fileExists(kernelPath) else {
+        throw MslError("kernel extraction failed — \(kernelPath) is missing or empty")
+    }
+    print("  Kernel \(kernelVer) extracted.")
+
+    // Extract modules from the modules deb for VSOCK support in the rootfs.
+    let modulesDir = "\(tmpdir)/deb-modules"
+    shell("mkdir -p '\(modulesDir)' && cd '\(modulesDir)' && \(ar) x '\(modulesDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(modulesDir)' 2>/dev/null; done")
+    try? FileManager.default.removeItem(atPath: modulesDeb)
+
+    // Move Ubuntu kernel modules into rootfs for VSOCK support.
+    // Modern kernels use /usr/lib/modules/; older kernels use /lib/modules/.
+    let modSrc = "\(modulesDir)/usr/lib/modules"
+    let modSrcFallback = "\(modulesDir)/lib/modules"
+    if FileManager.default.fileExists(atPath: modSrc) {
+        shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrc)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
+    } else if FileManager.default.fileExists(atPath: modSrcFallback) {
+        shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrcFallback)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
+    }
+    let modTarget = "\(tmpdir)/usr/lib/modules/\(kernelVer)"
+    // Generate minimal modules metadata for VSOCK
+    let dep = """
+    kernel/net/vmw_vsock/vsock.ko.zst:
+    kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
+    kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.zst: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst
+
+    """
+    shell("mkdir -p '\(modTarget)' 2>/dev/null")
+    try? dep.write(toFile: "\(modTarget)/modules.dep", atomically: true, encoding: .utf8)
+    try? "\n".write(toFile: "\(modTarget)/modules.alias", atomically: true, encoding: .utf8)
+    try? "\n".write(toFile: "\(modTarget)/modules.symbols", atomically: true, encoding: .utf8)
+    try? "\n".write(toFile: "\(modTarget)/modules.softdep", atomically: true, encoding: .utf8)
+    let vsockConf = "vsock\nvmw_vsock_virtio_transport\n"
+    try? vsockConf.write(toFile: "\(tmpdir)/etc/modules-load.d/vsock.conf", atomically: true, encoding: .utf8)
+    print("  Kernel modules installed.")
+    try? FileManager.default.removeItem(atPath: modulesDir)
 
     // Only chmod the specific files we need to be readable; avoid blanket +r
     // over the entire rootfs which could alter permissions on sensitive files.
@@ -609,14 +585,16 @@ private func ensureMsldBinary() -> String? {
     return nil
 }
 
-/// Auto-discover available kernel versions from Ubuntu Ports index.
-/// Falls back to empty array (uses hardcoded list) on any error.
+func parseKernelVersion(_ s: String) -> [Int] {
+    let s = s.replacingOccurrences(of: "-generic", with: "")
+    return s.split { $0 == "." || $0 == "-" }.compactMap { Int($0) }
+}
+
 func discoverKernelVersions() -> [(String, String)] {
     let url = "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/"
     guard let data = try? Data(contentsOf: URL(string: url)!),
           let html = String(data: data, encoding: .utf8)
     else { return [] }
-
     var versions: [(String, String)] = []
     let pattern = #"linux-image-unsigned-([\w.+-]+)_([\w.+-]+)_arm64\.deb"#
     guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
@@ -627,15 +605,17 @@ func discoverKernelVersions() -> [(String, String)] {
         let revRange = Range(match.range(at: 2), in: html)!
         let ver = String(html[verRange])
         let rev = String(html[revRange])
+        // Skip 64k page-size variants — Virtualization.framework requires 4K pages
+        if ver.hasSuffix("-64k") { return }
         versions.append((ver, rev))
     }
-    // Sort by numeric build number descending (newest first) to try latest first.
-    // Lexicographic sort on "6.8.0-141-generic" vs "6.8.0-99-generic" would
-    // put 99 after 141 because '9' > '1'.
     versions.sort { a, b in
-        let aNum = a.0.split(separator: "-").dropFirst().first.flatMap { Int($0) } ?? 0
-        let bNum = b.0.split(separator: "-").dropFirst().first.flatMap { Int($0) } ?? 0
-        return aNum > bNum
+        let aParts = parseKernelVersion(a.0)
+        let bParts = parseKernelVersion(b.0)
+        for (ap, bp) in zip(aParts, bParts) {
+            if ap != bp { return ap > bp }
+        }
+        return aParts.count > bParts.count
     }
     return versions
 }
