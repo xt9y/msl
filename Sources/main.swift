@@ -4,12 +4,31 @@ import Virtualization
 let dataDir = setupDataDir()
 var savedTermios = termios()
 var needTerminalRestore = false
+var shellWinsizeNeedsUpdate = false
 
 func restoreTerminal() {
     if needTerminalRestore {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &savedTermios)
         needTerminalRestore = false
     }
+}
+
+func getTerminalSize() -> (UInt16, UInt16) {
+    var ws = winsize()
+    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+        return (ws.ws_row, ws.ws_col)
+    }
+    return (24, 80)
+}
+
+func sendWinsize(sock: Int32) {
+    let (rows, cols) = getTerminalSize()
+    var marker: UInt8 = 0x02
+    var rowsBE = rows.bigEndian
+    var colsBE = cols.bigEndian
+    _ = withUnsafePointer(to: &marker) { write(sock, $0, 1) }
+    _ = withUnsafeBytes(of: &rowsBE) { write(sock, $0.baseAddress!, 2) }
+    _ = withUnsafeBytes(of: &colsBE) { write(sock, $0.baseAddress!, 2) }
 }
 
 func runShell() {
@@ -51,6 +70,7 @@ func runShell() {
 
     let isTTY = isatty(STDIN_FILENO) == 1
     if isTTY {
+        sendWinsize(sock: sock)
         tcgetattr(STDIN_FILENO, &savedTermios)
         var raw = savedTermios
         raw.c_iflag &= ~tcflag_t(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | IXON)
@@ -63,6 +83,9 @@ func runShell() {
         signal(SIGTERM) { _ in restoreTerminal(); exit(130) }
         signal(SIGINT) { _ in restoreTerminal(); exit(130) }
         signal(SIGHUP) { _ in restoreTerminal(); exit(129) }
+
+        shellWinsizeNeedsUpdate = false
+        signal(SIGWINCH) { _ in shellWinsizeNeedsUpdate = true }
     }
 
     var running = true
@@ -80,6 +103,10 @@ func runShell() {
             let n = read(STDIN_FILENO, &buf, buf.count)
             if n > 0 {
                 var written = 0
+                if shellWinsizeNeedsUpdate && isTTY {
+                    shellWinsizeNeedsUpdate = false
+                    sendWinsize(sock: sock)
+                }
                 while written < n {
                     let w = buf.withUnsafeBytes { raw in
                         write(sock, raw.baseAddress! + written, n - written)
@@ -211,7 +238,7 @@ func main() {
         printHelp()
 
     case "version":
-        print("msl")
+        print("msl \(MSLVersion)")
 
     case "setup":
         let (ds, rs, cc) = parseSetupFlags(args)

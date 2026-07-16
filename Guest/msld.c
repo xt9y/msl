@@ -96,6 +96,16 @@ static void xwrite(int fd, const void *buf, size_t len) {
     }
 }
 
+static ssize_t xread(int fd, void *buf, size_t count) {
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t n = read(fd, (char *)buf + (count - remaining), remaining);
+        if (n <= 0) return -1;
+        remaining -= n;
+    }
+    return count;
+}
+
 static void serve_client(int client_fd) {
     g_client_fd = client_fd;
     probe_gateway();
@@ -112,12 +122,24 @@ static void serve_client(int client_fd) {
     int sel = select(client_fd + 1, &rfds, NULL, NULL, &tv);
     if (sel <= 0) return;
 
+    uint16_t ws_row = 24, ws_col = 80;
     uint8_t mode;
-    ssize_t n = read(client_fd, &mode, 1);
+    uint8_t first_byte;
+    ssize_t n = read(client_fd, &first_byte, 1);
     if (n != 1) return;
 
+    if (first_byte == 0x02) {
+        uint8_t ws_buf[4];
+        if (xread(client_fd, ws_buf, 4) < 0) return;
+        ws_row = (uint16_t)(ws_buf[0]) << 8 | ws_buf[1];
+        ws_col = (uint16_t)(ws_buf[2]) << 8 | ws_buf[3];
+        if (xread(client_fd, &mode, 1) < 0) return;
+    } else {
+        mode = first_byte;
+    }
+
     if (mode == 0x01) {
-        struct winsize ws = { .ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0 };
+        struct winsize ws = { .ws_row = ws_row, .ws_col = ws_col };
         struct termios tio;
         memset(&tio, 0, sizeof(tio));
         tio.c_iflag = ICRNL | IXON;
@@ -159,6 +181,8 @@ static void serve_client(int client_fd) {
         }
 
         char buf[BUF_SIZE];
+        static unsigned char ws_pending[5];
+        static int ws_pending_len = 0;
         while (1) {
             fd_set fds;
             FD_ZERO(&fds);
@@ -170,9 +194,32 @@ static void serve_client(int client_fd) {
             if (ret < 0) break;
 
             if (FD_ISSET(client_fd, &fds)) {
-                ssize_t n = read(client_fd, buf, BUF_SIZE);
+                ssize_t n;
+                if (ws_pending_len > 0) {
+                    memcpy(buf, ws_pending, ws_pending_len);
+                    ssize_t more = read(client_fd, buf + ws_pending_len, BUF_SIZE - ws_pending_len);
+                    if (more <= 0) { ws_pending_len = 0; goto shell_done; }
+                    n = ws_pending_len + more;
+                    ws_pending_len = 0;
+                } else {
+                    n = read(client_fd, buf, BUF_SIZE);
+                }
                 if (n > 0) {
-                    ssize_t pos = 0;
+                    ssize_t off = 0;
+                    if (n >= 5 && buf[0] == 0x02) {
+                        struct winsize ws2;
+                        ws2.ws_row = (uint16_t)(buf[1]) << 8 | buf[2];
+                        ws2.ws_col = (uint16_t)(buf[3]) << 8 | buf[4];
+                        ws2.ws_xpixel = 0;
+                        ws2.ws_ypixel = 0;
+                        ioctl(master_fd, TIOCSWINSZ, &ws2);
+                        off = 5;
+                    } else if (buf[0] == 0x02 && n < 5 && n > 0) {
+                        memcpy(ws_pending, buf, n);
+                        ws_pending_len = n;
+                        continue;
+                    }
+                    ssize_t pos = off;
                     while (pos < n) {
                         ssize_t w = write(master_fd, buf + pos, n - pos);
                         if (w <= 0) goto shell_done;
@@ -213,18 +260,12 @@ shell_done:
 
     uint32_t cmd_len;
     uint8_t len_buf[4];
-    n = read(client_fd, len_buf, 4);
-    if (n != 4) return;
+    if (xread(client_fd, len_buf, 4) < 0) return;
     cmd_len = ntohl(*(uint32_t *)len_buf);
     if (cmd_len == 0 || cmd_len > BUF_SIZE - 1) return;
 
     char cmd[BUF_SIZE];
-    size_t pos = 0;
-    while (pos < cmd_len) {
-        n = read(client_fd, cmd + pos, cmd_len - pos);
-        if (n <= 0) return;
-        pos += n;
-    }
+    if (xread(client_fd, cmd, cmd_len) < 0) return;
     cmd[cmd_len] = '\0';
 
     int out_pipe[2], err_pipe[2];

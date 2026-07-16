@@ -53,7 +53,7 @@ msl exec xeyes
 make
 ```
 
-Requires: Xcode 15+, Xcode Command Line Tools, and `aarch64-linux-musl-gcc` (for the guest daemon).
+Requires: Xcode 15+, Xcode Command Line Tools, and `zig` (for cross-compiling the guest daemon).
 
 ## Uninstall
 

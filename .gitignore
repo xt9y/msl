@@ -1,11 +1,6 @@
-.*.swp
 build/
-Guest/msld
 .DS_Store
-._*
 *.swp
 *.swo
 *~
 Sources/Version.swift
-.release.sh
-._release.sh

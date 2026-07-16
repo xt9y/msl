@@ -2,7 +2,9 @@ SWIFTC = xcrun swiftc
 SWIFT_FLAGS = -framework Virtualization -O -Xcc -fobjc-arc
 BUILD_DIR = build
 PRODUCT = $(BUILD_DIR)/msl
+GUEST = $(BUILD_DIR)/msld
 VERSION_FILE = Sources/Version.swift
+GUEST_SRC = Guest/msld.c
 
 SWIFT_SRCS = \
 	Sources/main.swift \
@@ -15,7 +17,7 @@ SWIFT_SRCS = \
 OBJC_SRCS = Sources/MSLVSOCK.m
 OBJC_HEADER = Sources/BridgingHeader.h
 
-all: $(PRODUCT)
+all: $(PRODUCT) $(GUEST)
 
 $(VERSION_FILE):
 	@echo 'import Foundation' > $(VERSION_FILE)
@@ -30,6 +32,10 @@ $(PRODUCT): $(VERSION_FILE) $(SWIFT_SRCS) $(OBJC_SRCS)
 		$(VERSION_FILE) $(SWIFT_SRCS) $(OBJC_SRCS)
 	@echo "Build complete: $(PRODUCT) (v$$(grep MSLVersion $(VERSION_FILE) | sed 's/.*"\(.*\)"/\1/'))"
 
+$(GUEST): $(GUEST_SRC)
+	@mkdir -p $(BUILD_DIR)
+	zig cc -target aarch64-linux-musl -static -Os -s -o $@ $(GUEST_SRC)
+
 clean:
 	rm -rf $(BUILD_DIR)
 
@@ -37,6 +43,6 @@ DEV_ID ?= -
 
 sign: $(PRODUCT)
 	codesign --entitlements Resources/msl.entitlements \
-		--force --sign "$(DEV_ID)" "$(PRODUCT)" 2>/dev/null || true
+		--force --sign "$(DEV_ID)" "$(PRODUCT)"
 
-.PHONY: all clean gen-version sign
+.PHONY: all clean sign
