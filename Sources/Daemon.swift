@@ -50,6 +50,7 @@ class Daemon {
         try state.writePID()
         defer { state.removePID() }
 
+        try? FileManager.default.removeItem(atPath: "\(dataDir)/vm.dead")
         ensureDisplayBridge()
 
         mslLog("booting VM")
@@ -88,13 +89,20 @@ class Daemon {
     }
 
     private func ensurePacmanKeyring() async {
-        let marker = "/var/lib/msl-pacman-key.done"
-        let (_, checkExit) = await vm.execOnGuest("test -f \(marker)")
-        if checkExit == 0 { return }
+        let hostMarker = "\(dataDir)/.pacman-key.done"
+        if FileManager.default.fileExists(atPath: hostMarker) { return }
+        let guestMarker = "/var/lib/msl-pacman-key.done"
+        let (_, checkExit) = await vm.execOnGuest("test -f \(guestMarker)")
+        if checkExit == 0 {
+            try? "".write(toFile: hostMarker, atomically: true, encoding: .utf8)
+            return
+        }
         mslLog("initializing pacman keyring")
-        let cmd = "rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses; pacman -Syy && touch \(marker)"
-        let (out, code) = await vm.execOnGuest(cmd, timeout: 180)
-        if code != 0 {
+        let setup = "rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft; pacman -Syy && systemctl enable --now msl-firewall && touch \(guestMarker)"
+        let (out, code) = await vm.execOnGuest(setup, timeout: 180)
+        if code == 0 {
+            try? "".write(toFile: hostMarker, atomically: true, encoding: .utf8)
+        } else {
             mslLog("pacman-key init failed (exit \(code)): \(String(data: out, encoding: .utf8) ?? "")")
         }
     }
@@ -139,13 +147,14 @@ class Daemon {
                         let bufsize = 65536
                         var buf = [UInt8](repeating: 0, count: bufsize)
                         let cliFD = client, vsockFD = vsockFd
+
+                        _ = fcntl(cliFD, F_SETFL, fcntl(cliFD, F_GETFL, 0) | O_NONBLOCK)
+                        _ = fcntl(vsockFD, F_SETFL, fcntl(vsockFD, F_GETFL, 0) | O_NONBLOCK)
+
                         while true {
-                            var pfd = pollfd(fd: cliFD, events: Int16(POLLIN), revents: 0)
-                            let pret = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) }
-                            if pret < 0 { break }
-                            if pret > 0 {
-                                let n = read(cliFD, &buf, bufsize)
-                                if n <= 0 { break }
+                            let n = read(cliFD, &buf, bufsize)
+                            let nErrno = errno
+                            if n > 0 {
                                 var pos = 0
                                 while pos < n {
                                     let w = buf.withUnsafeBytes { raw in
@@ -155,22 +164,28 @@ class Daemon {
                                     pos += w
                                 }
                                 if pos < n { break }
+                            } else if n == 0 {
+                                break
+                            } else if nErrno != EAGAIN && nErrno != EWOULDBLOCK {
+                                break
                             }
-                            pfd = pollfd(fd: vsockFD, events: Int16(POLLIN), revents: 0)
-                            let vret = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) }
-                            if vret < 0 { break }
-                            if vret > 0 {
-                                let n = read(vsockFD, &buf, bufsize)
-                                if n <= 0 { break }
+
+                            let vn = read(vsockFD, &buf, bufsize)
+                            let vnErrno = errno
+                            if vn > 0 {
                                 var pos = 0
-                                while pos < n {
+                                while pos < vn {
                                     let w = buf.withUnsafeBytes { raw in
-                                        write(cliFD, raw.baseAddress! + pos, n - pos)
+                                        write(cliFD, raw.baseAddress! + pos, vn - pos)
                                     }
                                     if w <= 0 { break }
                                     pos += w
                                 }
-                                if pos < n { break }
+                                if pos < vn { break }
+                            } else if vn == 0 {
+                                break
+                            } else if vnErrno != EAGAIN && vnErrno != EWOULDBLOCK {
+                                break
                             }
                         }
                         DispatchQueue.main.async { [self] in
@@ -274,24 +289,32 @@ class Daemon {
                         written += n
                     }
 
-                    let totalBudgetSeconds: Double = 300
+                    let totalBudgetSeconds: Double = 30
+                    let maxOutputBytes = 10 * 1024 * 1024
                     let deadline = Date().addingTimeInterval(totalBudgetSeconds)
                     var outBuf = [UInt8](repeating: 0, count: 65536)
                     var allOutput = Data()
                     var timedOut = false
+
+                    let flags = fcntl(fd, F_GETFL, 0)
+                    _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
                     commandLoop: while true {
                         let remaining = max(0.0, deadline.timeIntervalSinceNow)
                         if remaining <= 0 { timedOut = true; break commandLoop }
-                        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                        let pollMs = Int32(min(remaining, 0.1) * 1000)
-                        let pret = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, pollMs) }
-                        if pret < 0 { break }
-                        if pret == 0 { continue }
                         let n = read(fd, &outBuf, outBuf.count)
+                        let savedErrno = errno
                         if n > 0 {
-                            allOutput.append(outBuf, count: n)
+                            if allOutput.count < maxOutputBytes {
+                                let room = maxOutputBytes - allOutput.count
+                                allOutput.append(outBuf, count: min(n, room))
+                                if allOutput.count >= maxOutputBytes { break commandLoop }
+                            }
                         } else if n == 0 {
                             break
+                        } else if savedErrno == EAGAIN || savedErrno == EWOULDBLOCK {
+                            usleep(10000)
+                            continue
                         } else {
                             break
                         }
@@ -311,9 +334,17 @@ class Daemon {
                         return
                     }
                     let exitOffset = allOutput.count - 4
-                    let outputData = allOutput.subdata(in: 0..<exitOffset)
-                    let exitBytes = [UInt8](allOutput[exitOffset..<allOutput.count])
-                    let exitCode = UInt32(exitBytes[0]) << 24 | UInt32(exitBytes[1]) << 16 | UInt32(exitBytes[2]) << 8 | UInt32(exitBytes[3])
+                    let outputData: Data
+                    if exitOffset > 0 {
+                        outputData = allOutput.withUnsafeBytes { ptr in
+                            Data(bytes: ptr.baseAddress!, count: exitOffset)
+                        }
+                    } else {
+                        outputData = Data()
+                    }
+                    let exitCode = allOutput.withUnsafeBytes { ptr in
+                        ptr.loadUnaligned(fromByteOffset: exitOffset, as: UInt32.self).bigEndian
+                    }
 
                     if !outputData.isEmpty {
                         self.sendOutput(send, data: outputData)

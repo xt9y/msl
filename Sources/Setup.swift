@@ -27,11 +27,96 @@ func mslLog(_ message: String) {
 @discardableResult
 func shell(_ command: String) -> Int32 {
     let task = Process()
-    task.launchPath = "/bin/bash"
+    task.executableURL = URL(fileURLWithPath: "/bin/bash")
     task.arguments = ["-c", command]
-    task.launch()
+    guard (try? task.run()) != nil else { return -1 }
     task.waitUntilExit()
     return task.terminationStatus
+}
+
+/// Run a shell command and throw if it fails.
+@discardableResult
+func shellOrThrow(_ command: String) throws -> Int32 {
+    let rc = shell(command)
+    guard rc == 0 else {
+        throw MslError("command failed (exit \(rc)): \(command)")
+    }
+    return rc
+}
+
+/// Run an executable with an argument array (no shell) and return exit code.
+@discardableResult
+func proc(_ path: String, _ args: [String], cwd: String? = nil) -> Int32 {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: path)
+    task.arguments = args
+    if let cwd { task.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+    guard (try? task.run()) != nil else { return -1 }
+    task.waitUntilExit()
+    return task.terminationStatus
+}
+
+/// Run an executable with an argument array and throw on failure.
+@discardableResult
+func procOrThrow(_ path: String, _ args: [String], cwd: String? = nil) throws -> Int32 {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: path)
+    task.arguments = args
+    if let cwd { task.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+    try task.run()
+    task.waitUntilExit()
+    guard task.terminationStatus == 0 else {
+        throw MslError("\(path) failed (exit \(task.terminationStatus)): \(args.prefix(4).joined(separator: " "))")
+    }
+    return task.terminationStatus
+}
+
+/// Arch Linux ARM build system key fingerprint (signs packages and checksums).
+let archLinuxArmSigningKey = "68B3537F39A313B3E574D06777193F152BDBE6A6"
+
+/// Try to GPG-verify `file` against a detached signature at `sigURL`.
+/// Uses a temporary GNUPGHOME to avoid polluting the user's keyring.
+/// Returns true if verification succeeds or gpg is unavailable / sig not found.
+/// Throws if gpg is available but verification fails.
+func verifyWithGPG(file: String, sigURL: String, keyFingerprint: String) throws -> Bool {
+    guard proc("/usr/bin/gpg", ["--version"]) == 0 else { return false }
+    let sigData: Data
+    do {
+        sigData = try Data(contentsOf: URL(string: sigURL)!)
+    } catch {
+        return false
+    }
+    let sigPath = "\(file).sig"
+    try sigData.write(to: URL(fileURLWithPath: sigPath), options: .atomic)
+    defer { try? FileManager.default.removeItem(atPath: sigPath) }
+    let gnupgHome = "\(NSTemporaryDirectory())msl-gpghome.\(getpid())"
+    try? FileManager.default.createDirectory(atPath: gnupgHome, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: gnupgHome) }
+    var env = ProcessInfo.processInfo.environment
+    env["GNUPGHOME"] = gnupgHome
+    let gpgImport = Process()
+    gpgImport.executableURL = URL(fileURLWithPath: "/usr/bin/gpg")
+    gpgImport.arguments = ["--keyserver", "keyserver.ubuntu.com", "--recv-keys", keyFingerprint]
+    gpgImport.environment = env
+    gpgImport.standardInput = Pipe()
+    gpgImport.standardError = Pipe()
+    gpgImport.standardOutput = Pipe()
+    guard (try? gpgImport.run()) != nil else { return false }
+    gpgImport.waitUntilExit()
+    guard gpgImport.terminationStatus == 0 else { return false }
+    let gpgVerify = Process()
+    gpgVerify.executableURL = URL(fileURLWithPath: "/usr/bin/gpg")
+    gpgVerify.arguments = ["--verify", sigPath, file]
+    gpgVerify.environment = env
+    gpgVerify.standardError = Pipe()
+    gpgVerify.standardOutput = Pipe()
+    do {
+        try gpgVerify.run()
+        gpgVerify.waitUntilExit()
+        return gpgVerify.terminationStatus == 0
+    } catch {
+        return false
+    }
 }
 
 /// Download a URL to a file with retry, resume, and sha256 verification.
@@ -48,8 +133,10 @@ func downloadWithChecksum(urls: [String], to destPath: String, expectedSha256: S
                 print("  Retrying (\(attempt)/3)...")
             }
             fflush(stdout)
-            let resumeFlag = attempt > 1 ? "-C -" : ""
-            let rc = shell("curl -Lsf --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 300 \(resumeFlag) -o '\(destPath)' '\(url)' 2>&1")
+            var curlArgs = ["-Lsf", "--retry", "3", "--retry-delay", "5", "--connect-timeout", "30", "--max-time", "300"]
+            if attempt > 1 { curlArgs += ["-C", "-"] }
+            curlArgs += ["-o", destPath, url]
+            let rc = proc("/usr/bin/curl", curlArgs)
             if rc == 0 {
                 if let expected = expectedSha256 {
                     let actual = sha256File(destPath)
@@ -76,12 +163,16 @@ func downloadWithChecksum(urls: [String], to destPath: String, expectedSha256: S
 
 func sha256File(_ path: String) -> String {
     let task = Process()
-    task.launchPath = "/usr/bin/shasum"
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
     task.arguments = ["-a", "256", path]
     let pipe = Pipe()
     task.standardOutput = pipe
     task.standardError = Pipe()
-    task.launch()
+    do {
+        try task.run()
+    } catch {
+        return ""
+    }
     task.waitUntilExit()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     let output = String(data: data, encoding: .utf8) ?? ""
@@ -89,13 +180,13 @@ func sha256File(_ path: String) -> String {
 }
 
 /// Check available disk space. Throws if less than `requiredGB` GB is free.
-func checkDiskSpace(requiredGB: Int) throws {
+func checkDiskSpace(requiredGB: Int, at path: String) throws {
     var fs = statfs()
-    guard statfs("/Users", &fs) == 0 else { return }
+    guard statfs(path, &fs) == 0 else { return }
     let freeBytes = UInt64(fs.f_bavail) * UInt64(fs.f_bsize)
     let freeGB = Int(freeBytes / (1024 * 1024 * 1024))
     if freeGB < requiredGB {
-        throw MslError("insufficient disk space: \(requiredGB)GB required, \(freeGB)GB available")
+        throw MslError("insufficient disk space: \(requiredGB)GB required, \(freeGB)GB available at \(path)")
     }
 }
 
@@ -135,7 +226,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     print("msl setup\n")
 
-    try checkDiskSpace(requiredGB: diskSizeGB + 2)
+    try checkDiskSpace(requiredGB: diskSizeGB + 2, at: dataDir)
 
     try? FileManager.default.removeItem(atPath: kernelPath)
     try? FileManager.default.removeItem(atPath: diskPath)
@@ -159,14 +250,22 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     ]
     let sha256URL = "https://archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz.sha256"
 
-    let expectedSha = (try? Data(contentsOf: URL(string: sha256URL)!))
-        .flatMap { String(data: $0, encoding: .utf8) }
-        .flatMap { $0.split(separator: " ").first.map(String.init) }
-    if expectedSha == nil {
-        fputs("  warning: could not fetch sha256 checksum — skipping integrity check\n", stderr)
+    var expectedSha: String? = nil
+    if ProcessInfo.processInfo.environment["MSL_NO_VERIFY"] == nil,
+       let shaData = try? Data(contentsOf: URL(string: sha256URL)!),
+       let shaStr = String(data: shaData, encoding: .utf8) {
+        expectedSha = shaStr.split(separator: " ").first.map(String.init)
+        if expectedSha == nil {
+            throw MslError("failed to parse sha256 checksum from \(sha256URL)")
+        }
     }
 
     try downloadWithChecksum(urls: mirrors, to: tarballPath, expectedSha256: expectedSha)
+
+    let sigURL = "\(sha256URL).sig"
+    if try verifyWithGPG(file: tarballPath, sigURL: sigURL, keyFingerprint: archLinuxArmSigningKey) {
+        print("  GPG signature verified.")
+    }
 
     print("  Extracting rootfs...")
     fflush(stdout)
@@ -179,11 +278,11 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     print("  Configuring system...")
     fflush(stdout)
-    // Root is intentionally passwordless for this local dev VM — the VM
-    // runs on the host's Virtualization.framework with VSOCK-only access
-    // (no network login). Users who want network SSH should set a password.
-    shell("sed -i '' 's|^root:.*|root::0:0:root:/root:/bin/bash|' '\(tmpdir)/etc/shadow' 2>/dev/null")
-    shell("sed -i '' 's|^root:.*|root::0:0:root:/root:/bin/bash|' '\(tmpdir)/etc/passwd' 2>/dev/null")
+    // Root is passwordless for convenience in this local dev VM. The VM
+    // has outbound NAT networking but no inbound port forwarding from the
+    // host. If you install sshd, set a root password first.
+    try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/shadow"])
+    try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/passwd"])
     shell("ln -sf /dev/null '\(tmpdir)/etc/systemd/system/systemd-firstboot.service'")
     shell("ln -sf ../usr/share/zoneinfo/UTC '\(tmpdir)/etc/localtime'")
     try? FileManager.default.removeItem(atPath: "\(tmpdir)/etc/machine-id")
@@ -193,6 +292,28 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
     let bashProfile = "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
     try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
+
+    // Guest firewall: drop all inbound on eth0 except established/related.
+    // This is defense-in-depth; Virtualization.framework NAT already blocks
+    // inbound from the LAN by default.
+    try FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/systemd/system", withIntermediateDirectories: true)
+    let fwService = """
+[Unit]
+Description=MSL guest firewall
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/iptables -A INPUT -i eth0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+ExecStart=/usr/bin/iptables -A INPUT -i eth0 -p udp --dport 68 -j ACCEPT
+ExecStart=/usr/bin/iptables -A INPUT -i eth0 -j DROP
+ExecStop=/usr/bin/iptables -F INPUT
+
+[Install]
+WantedBy=multi-user.target
+"""
+    try fwService.write(toFile: "\(tmpdir)/etc/systemd/system/msl-firewall.service", atomically: true, encoding: .utf8)
 
     // Generate a random auth token for VSOCK connections. Written to both
     // the host (~/.msl/token) and the guest rootfs (/etc/msld-token).
@@ -206,11 +327,14 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     }
     let tokenData = Data(tokenBytes)
     try tokenData.write(to: URL(fileURLWithPath: "\(dataDir)/token"), options: .atomic)
+    shell("chmod 600 '\(dataDir)/token'")
     try tokenData.write(to: URL(fileURLWithPath: "\(tmpdir)/etc/msld-token"), options: .atomic)
     shell("chmod 600 '\(tmpdir)/etc/msld-token'")
 
     if let msld = msldPath {
-        shell("mkdir -p '\(tmpdir)/usr/local/bin' && cp -L '\(msld)' '\(tmpdir)/usr/local/bin/msld' && chmod +x '\(tmpdir)/usr/local/bin/msld'")
+        try procOrThrow("/bin/mkdir", ["-p", "\(tmpdir)/usr/local/bin"])
+        try procOrThrow("/bin/cp", ["-L", msld, "\(tmpdir)/usr/local/bin/msld"])
+        try procOrThrow("/bin/chmod", ["+x", "\(tmpdir)/usr/local/bin/msld"])
         print("  msld daemon embedded.")
     } else {
         fputs("  warning: msld not found — run 'brew install msld' first\n", stderr)
@@ -256,12 +380,13 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     let pacmanKeySvc = """
     [Unit]
     Description=Initialize pacman keyring (msl first-boot)
-    After=local-fs.target
+    After=network.target
+    Wants=network.target
     ConditionPathExists=!/var/lib/msl-pacman-key.done
 
     [Service]
     Type=oneshot
-    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses; pacman -Syy && touch /var/lib/msl-pacman-key.done'
+    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null; chmod 700 /root/.gnupg 2>/dev/null; pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft; pacman -Syy && systemctl enable --now msl-firewall && touch /var/lib/msl-pacman-key.done'
     RemainAfterExit=yes
 
     [Install]
@@ -300,11 +425,10 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
         // Only accept 6.8.x kernels (gzip raw format, known to work)
         return parts.count >= 2 && parts[0] == 6 && parts[1] == 8
     }
-    let kernelVersions: [(String, String)] = !discovered.isEmpty ? discovered : [
-        ("6.8.0-53-generic", "6.8.0-53.55"),
-        ("6.8.0-51-generic", "6.8.0-51.53"),
-        ("6.8.0-45-generic", "6.8.0-45.47"),
-    ]
+    guard !discovered.isEmpty else {
+        throw MslError("no compatible 6.8.x kernel found in Ubuntu ports pool — check https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/")
+    }
+    let kernelVersions = discovered
     var kernelDownloaded = false
     var kernelVer = ""
     let kernelDeb = "\(tmpdir)/kernel.deb"
@@ -333,7 +457,13 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     guard kernelDownloaded else {
         throw MslError("failed to download kernel")
     }
-    shell("mkdir -p '\(tmpdir)/deb-kernel' && cd '\(tmpdir)/deb-kernel' && \(ar) x '\(kernelDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(tmpdir)' 2>/dev/null; done")
+    let debKernelDir = "\(tmpdir)/deb-kernel"
+    try procOrThrow("/bin/mkdir", ["-p", debKernelDir])
+    try procOrThrow(ar, ["x", kernelDeb], cwd: debKernelDir)
+    let dataTars = (try? FileManager.default.contentsOfDirectory(atPath: debKernelDir).filter { $0.hasPrefix("data.tar") }) ?? []
+    for tarball in dataTars {
+        try procOrThrow("/usr/bin/tar", ["xf", "\(debKernelDir)/\(tarball)", "-C", tmpdir])
+    }
     try? FileManager.default.removeItem(atPath: kernelDeb)
     let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
     // Try gunzip decompression first (older kernels); fall back to direct copy (modern PE32+ EFI kernels)
@@ -348,7 +478,12 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     // Extract modules from the modules deb for VSOCK support in the rootfs.
     let modulesDir = "\(tmpdir)/deb-modules"
-    shell("mkdir -p '\(modulesDir)' && cd '\(modulesDir)' && \(ar) x '\(modulesDeb)' 2>/dev/null && for f in data.tar*; do tar xf \"$f\" -C '\(modulesDir)' 2>/dev/null; done")
+    try procOrThrow("/bin/mkdir", ["-p", modulesDir])
+    try procOrThrow(ar, ["x", modulesDeb], cwd: modulesDir)
+    let modDataTars = (try? FileManager.default.contentsOfDirectory(atPath: modulesDir).filter { $0.hasPrefix("data.tar") }) ?? []
+    for tarball in modDataTars {
+        try procOrThrow("/usr/bin/tar", ["xf", "\(modulesDir)/\(tarball)", "-C", modulesDir])
+    }
     try? FileManager.default.removeItem(atPath: modulesDeb)
 
     // Move Ubuntu kernel modules into rootfs for VSOCK support.
@@ -388,16 +523,27 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     // cannot copy files with restricted permissions when running as
     // a non-root user.
     shell("chmod -R a-s,u+r '\(tmpdir)' 2>/dev/null || true")
-    let cmd = "'\(mke2fs)' -t ext4 -d '\(tmpdir)' '\(diskPath)' \(diskSizeGB)G 2>&1"
-    guard shell(cmd) == 0 else {
-        throw MslError("failed to create disk image")
-    }
+    try procOrThrow(mke2fs, ["-t", "ext4", "-d", tmpdir, diskPath, "\(diskSizeGB)G"])
     print("  Disk image: \(diskPath)")
 
     let config = VMConfig(diskSizeGB: diskSizeGB, ramSizeGB: ramSizeGB, cpuCores: cpuCores)
     config.save(to: dataDir)
 
     print("\nDone. Run 'msl start' to boot the VM.\n")
+}
+
+func runUpdate(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) throws {
+    print("msl update\n")
+    let dataDir = setupDataDir()
+    guard isSetupComplete() else {
+        print("  No existing setup found — running full setup instead.")
+        try ensureSetup(diskSizeGB: diskSizeGB, ramSizeGB: ramSizeGB, cpuCores: cpuCores)
+        return
+    }
+    try? FileManager.default.removeItem(atPath: "\(dataDir)/kernel")
+    try? FileManager.default.removeItem(atPath: "\(dataDir)/arch.img")
+    try? FileManager.default.removeItem(atPath: "\(dataDir)/.pacman-key.done")
+    try ensureSetup(diskSizeGB: diskSizeGB, ramSizeGB: ramSizeGB, cpuCores: cpuCores)
 }
 
 func setupDataDir() -> String {
@@ -436,11 +582,11 @@ private func findMke2fs() -> String? {
     var st = stat()
     if stat("/opt/homebrew/Cellar/e2fsprogs", &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR {
         let task = Process()
-        task.launchPath = "/bin/sh"
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
         task.arguments = ["-c", "ls /opt/homebrew/Cellar/e2fsprogs/*/sbin/mke2fs 2>/dev/null | head -1"]
         let pipe = Pipe()
         task.standardOutput = pipe
-        task.launch()
+        guard (try? task.run()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
             return path
@@ -543,11 +689,11 @@ private func resolveSelfDir() -> String {
 @discardableResult
 func shellOutput(_ command: String) -> String {
     let task = Process()
-    task.launchPath = "/bin/bash"
+    task.executableURL = URL(fileURLWithPath: "/bin/bash")
     task.arguments = ["-c", command]
     let pipe = Pipe()
     task.standardOutput = pipe
-    task.launch()
+    guard (try? task.run()) != nil else { return "" }
     task.waitUntilExit()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

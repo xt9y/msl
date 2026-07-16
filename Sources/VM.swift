@@ -204,24 +204,32 @@ class MSLVM: NSObject {
         let deadline = Date().addingTimeInterval(timeout)
         var outBuf = [UInt8](repeating: 0, count: 65536)
         var allOutput = Data()
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
         while true {
             let remaining = max(0.0, deadline.timeIntervalSinceNow)
             if remaining <= 0 { break }
-            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let pollMs = Int32(min(remaining, 0.1) * 1000)
-            let pret = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, pollMs) }
-            if pret < 0 { break }
-            if pret == 0 { continue }
             let n = read(fd, &outBuf, outBuf.count)
+            let savedErrno = errno
             if n > 0 { allOutput.append(outBuf, count: n) }
             else if n == 0 { break }
-            else { break }
+            else if savedErrno == EAGAIN || savedErrno == EWOULDBLOCK {
+                usleep(10000)
+                continue
+            } else { break }
         }
         guard allOutput.count >= 4 else { return (allOutput, 255) }
         let exitOffset = allOutput.count - 4
-        let outputData = allOutput.subdata(in: 0..<exitOffset)
-        let exitBytes = [UInt8](allOutput[exitOffset..<allOutput.count])
-        let exitCode = UInt32(exitBytes[0]) << 24 | UInt32(exitBytes[1]) << 16 | UInt32(exitBytes[2]) << 8 | UInt32(exitBytes[3])
+        let outputData: Data
+        if exitOffset > 0 {
+            outputData = allOutput.withUnsafeBytes { ptr in
+                Data(bytes: ptr.baseAddress!, count: exitOffset)
+            }
+        } else {
+            outputData = Data()
+        }
+        let exitCode = allOutput.withUnsafeBytes { ptr in
+            ptr.loadUnaligned(fromByteOffset: exitOffset, as: UInt32.self).bigEndian
+        }
         return (outputData, exitCode)
     }
 }
@@ -231,11 +239,17 @@ class MSLVM: NSObject {
 extension MSLVSOCK: @unchecked Sendable {}
 
 extension MSLVM: VZVirtualMachineDelegate {
+    private func markVMDead() {
+        try? "dead".write(toFile: "\(dataDir)/vm.dead", atomically: true, encoding: .utf8)
+    }
+
     func virtualMachine(_ vm: VZVirtualMachine, didStopWithError error: Error) {
-        mslLog("VM stopped: \(error.localizedDescription)")
+        mslLog("VM stopped with error: \(error.localizedDescription)")
+        markVMDead()
     }
 
     func guestDidStop(_ vm: VZVirtualMachine) {
         mslLog("Guest OS stopped")
+        markVMDead()
     }
 }

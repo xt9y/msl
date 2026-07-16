@@ -2,20 +2,24 @@ import Foundation
 
 struct DaemonState {
     let pidPath: String
+    let deadMarkerPath: String
     var lockFD: Int32
+    let dataDir: String
 
     init(dataDir: String) {
         self.pidPath = "\(dataDir)/daemon.pid"
+        self.deadMarkerPath = "\(dataDir)/vm.dead"
         self.lockFD = -1
+        self.dataDir = dataDir
     }
 
     func isRunning() -> Bool {
         guard let pid = readPID() else { return false }
-        guard kill(pid, 0) == 0 else {
+        guard processIsMsl(pid) else {
             try? FileManager.default.removeItem(atPath: pidPath)
             return false
         }
-        return processIsMsl(pid)
+        return !FileManager.default.fileExists(atPath: deadMarkerPath)
     }
 
     func readPID() -> pid_t? {
@@ -51,7 +55,13 @@ struct DaemonState {
     }
 
     private func processIsMsl(_ pid: pid_t) -> Bool {
-        let result = shellOutput("ps -p \(pid) -o comm= 2>/dev/null")
-        return result.contains("msl")
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let len = proc_pidpath(pid, &buf, UInt32(buf.count))
+        guard len > 0 else {
+            try? FileManager.default.removeItem(atPath: pidPath)
+            return false
+        }
+        let path = String(cString: buf)
+        return path.hasSuffix("/msl")
     }
 }

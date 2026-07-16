@@ -138,7 +138,12 @@ class IPCClient {
         var req = Data()
         withUnsafePointer(to: &len) { req.append(UnsafeBufferPointer(start: $0, count: 1)) }
         req.append(request)
-        _ = write(sock, (req as NSData).bytes, req.count)
+        var remaining = req
+        while !remaining.isEmpty {
+            let n = remaining.withUnsafeBytes { write(sock, $0.baseAddress, remaining.count) }
+            if n <= 0 { throw MslError("write: \(String(cString: strerror(errno)))") }
+            remaining = remaining.dropFirst(n)
+        }
 
         // Read all response frames
         var messages = [IPCMessage]()
@@ -153,15 +158,22 @@ class IPCClient {
 
             while true {
                 guard accum.count >= 8 else { break }
-                let typeBytes = [UInt8](accum[0..<4])
-                let typeRaw = UInt32(typeBytes[0]) << 24 | UInt32(typeBytes[1]) << 16 | UInt32(typeBytes[2]) << 8 | UInt32(typeBytes[3])
+                let typeRaw = accum.withUnsafeBytes { ptr in
+                    ptr.loadUnaligned(as: UInt32.self).bigEndian
+                }
                 let type = MessageType(rawValue: typeRaw) ?? .done
-                let lenBytes = [UInt8](accum[4..<8])
-                let msgLen = UInt32(lenBytes[0]) << 24 | UInt32(lenBytes[1]) << 16 | UInt32(lenBytes[2]) << 8 | UInt32(lenBytes[3])
+                let msgLen = accum.withUnsafeBytes { ptr in
+                    ptr.loadUnaligned(fromByteOffset: 4, as: UInt32.self).bigEndian
+                }
                 let total = Int(8 + msgLen)
                 guard accum.count >= total else { break }
-                let msgData = Data(accum[8..<total])
-                accum = Data(accum[total...])
+                var msgData = Data(count: total - 8)
+                _ = msgData.withUnsafeMutableBytes { dst in
+                    accum.withUnsafeBytes { src in
+                        memcpy(dst.baseAddress!, src.baseAddress! + 8, total - 8)
+                    }
+                }
+                accum.removeFirst(total)
                 messages.append(IPCMessage(type: type, data: msgData))
                 if type == .done || type == .exitCode { return messages }
             }

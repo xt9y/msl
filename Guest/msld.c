@@ -40,7 +40,7 @@ static void load_token(void) {
     if (!fp) { g_token_bytes = -1; return; }
     size_t n = fread(g_token, 1, TOKEN_SIZE, fp);
     fclose(fp);
-    g_token_bytes = (n > 0) ? (int)n : -1;
+    g_token_bytes = (n == TOKEN_SIZE) ? TOKEN_SIZE : -1;
 }
 
 /* constant-time comparison to avoid timing side-channels on the auth token */
@@ -268,11 +268,16 @@ shell_done:
     if (xread(client_fd, cmd, cmd_len) < 0) return;
     cmd[cmd_len] = '\0';
 
+    sigset_t old_sigchld, sigchld_block;
+    sigemptyset(&sigchld_block);
+    sigaddset(&sigchld_block, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &sigchld_block, &old_sigchld);
+
     int out_pipe[2], err_pipe[2];
-    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0) return;
+    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0) { sigprocmask(SIG_SETMASK, &old_sigchld, NULL); return; }
 
     pid_t pid = fork();
-    if (pid < 0) { close(out_pipe[0]); close(out_pipe[1]); close(err_pipe[0]); close(err_pipe[1]); return; }
+    if (pid < 0) { close(out_pipe[0]); close(out_pipe[1]); close(err_pipe[0]); close(err_pipe[1]); sigprocmask(SIG_SETMASK, &old_sigchld, NULL); return; }
 
     if (pid == 0) {
         close(out_pipe[0]); close(err_pipe[0]);
@@ -282,9 +287,7 @@ shell_done:
         if (g_listen_fd > 2) close(g_listen_fd);
         if (client_fd > 2)   close(client_fd);
         if (g_display[0]) setenv("DISPLAY", g_display, 1);
-        char sourced_cmd[BUF_SIZE];
-        snprintf(sourced_cmd, sizeof(sourced_cmd), ". /root/.bashrc 2>/dev/null; exec %s", cmd);
-        execl("/bin/sh", "sh", "-c", sourced_cmd, (char *)NULL);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
 
@@ -294,6 +297,8 @@ shell_done:
     int out_fd = out_pipe[0], err_fd = err_pipe[0];
     int child_status = 0;
     int child_exited = 0;
+    unsigned long total_sent = 0;
+    const unsigned long max_output = 10 * 1024 * 1024;
 
     while (1) {
         fd_set fds;
@@ -310,13 +315,25 @@ shell_done:
         bool data = false;
         if (out_fd >= 0 && FD_ISSET(out_fd, &fds)) {
             n = read(out_fd, buf, BUF_SIZE);
-            if (n > 0) { xwrite(client_fd, buf, n); data = true; }
-            else { close(out_fd); out_fd = -1; }
+            if (n > 0) {
+                if (total_sent < max_output) {
+                    size_t to_send = (total_sent + n > max_output) ? max_output - total_sent : n;
+                    xwrite(client_fd, buf, to_send);
+                    total_sent += to_send;
+                    data = true;
+                }
+            } else { close(out_fd); out_fd = -1; }
         }
         if (err_fd >= 0 && FD_ISSET(err_fd, &fds)) {
             n = read(err_fd, buf, BUF_SIZE);
-            if (n > 0) { xwrite(client_fd, buf, n); data = true; }
-            else { close(err_fd); err_fd = -1; }
+            if (n > 0) {
+                if (total_sent < max_output) {
+                    size_t to_send = (total_sent + n > max_output) ? max_output - total_sent : n;
+                    xwrite(client_fd, buf, to_send);
+                    total_sent += to_send;
+                    data = true;
+                }
+            } else { close(err_fd); err_fd = -1; }
         }
         if (!data && ret == 0) {
             pid_t wpid = waitpid(pid, &child_status, WNOHANG);
@@ -333,6 +350,7 @@ shell_done:
     } else {
         waitpid(pid, &status, 0);
     }
+    sigprocmask(SIG_SETMASK, &old_sigchld, NULL);
     uint32_t exit_code = htonl(WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 255));
 
     xwrite(client_fd, &exit_code, 4);

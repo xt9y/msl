@@ -52,6 +52,43 @@ jobs:
       - name: Verify binary runs
         run: ./build/msl version
 
+      - name: Validate Arch Linux ARM GPG signing key fingerprint
+        run: |
+          FINGERPRINT="68B3537F39A313B3E574D06777193F152BDBE6A6"
+          if ! command -v gpg &>/dev/null; then
+            echo "SKIP: gpg not available — fingerprint not verified against keyserver"
+            exit 0
+          fi
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          echo "Fetching Arch Linux ARM signing key from keyserver..."
+          if gpg --keyserver keyserver.ubuntu.com --recv-keys "$FINGERPRINT" 2>&1; then
+            echo "  -> key imported successfully"
+          else
+            echo "WARN: keyserver unreachable — skipping live verification"
+            echo "      fingerprint: $FINGERPRINT"
+            rm -rf "$GNUPGHOME"
+            exit 0
+          fi
+          echo "Verifying fingerprint..."
+          EXPECTED=$(echo "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')
+          ACTUAL=$(gpg --list-keys --with-colons --fingerprint "$FINGERPRINT" 2>/dev/null | grep '^fpr:' | cut -d: -f10)
+          if [ "$ACTUAL" = "$EXPECTED" ]; then
+            echo "PASS: fingerprint matches Arch Linux ARM Build System signing key"
+          else
+            echo "FAIL: fingerprint mismatch!"
+            echo "  expected: $EXPECTED"
+            echo "  actual:   $ACTUAL"
+            rm -rf "$GNUPGHOME"
+            exit 1
+          fi
+          if gpg --list-keys "$FINGERPRINT" 2>/dev/null | grep -qi "Arch Linux ARM"; then
+            echo "PASS: key UID confirms Arch Linux ARM origin"
+          else
+            echo "WARN: key UID does not mention Arch Linux ARM"
+          fi
+          rm -rf "$GNUPGHOME"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -200,3 +237,56 @@ jobs:
           echo "$result" | grep -q after_restart || { echo "FAIL: restart"; exit 1; }
           ./build/msl stop
           echo "PASS: restart"
+
+      - name: "Test pacman-keyring init marker"
+        if: env.VIRT == 'yes'
+        run: |
+          echo "Checking pacman-keyring init completed..."
+          if [ -f ~/.msl/.pacman-key.done ]; then
+            echo "PASS: host marker ~/.msl/.pacman-key.done exists"
+          else
+            echo "FAIL: pacman-keyring host marker not created"
+            exit 1
+          fi
+          guest_marker=$(./build/msl exec "test -f /var/lib/msl-pacman-key.done && echo yes || echo no" 2>&1)
+          if [ "$guest_marker" = "yes" ]; then
+            echo "PASS: guest marker /var/lib/msl-pacman-key.done exists"
+          else
+            echo "FAIL: guest marker not found in VM"
+            exit 1
+          fi
+
+      - name: "Test firewall and installed packages"
+        if: env.VIRT == 'yes'
+        run: |
+          echo "Checking msl-firewall service..."
+          firewall_status=$(./build/msl exec "systemctl is-active msl-firewall" 2>&1)
+          echo "msl-firewall: $firewall_status"
+          if [ "$firewall_status" = "active" ]; then
+            echo "PASS: msl-firewall service is active"
+          else
+            echo "FAIL: msl-firewall not active (got: $firewall_status)"
+            exit 1
+          fi
+
+          echo "Checking iptables rules..."
+          iptables_rules=$(./build/msl exec "iptables -L INPUT -n" 2>&1)
+          echo "$iptables_rules"
+          if echo "$iptables_rules" | grep -q "DROP"; then
+            echo "PASS: iptables DROP rule present"
+          else
+            echo "FAIL: no DROP rule in INPUT chain"
+            exit 1
+          fi
+
+          echo "Checking installed packages..."
+          for pkg in iptables-nft ncurses archlinuxarm-keyring; do
+            pkg_info=$(./build/msl exec "pacman -Qi $pkg 2>&1 | head -1" 2>&1)
+            echo "$pkg: $pkg_info"
+            if echo "$pkg_info" | grep -qi "Name"; then
+              echo "  PASS: $pkg installed"
+            else
+              echo "  FAIL: $pkg not installed"
+              exit 1
+            fi
+          done

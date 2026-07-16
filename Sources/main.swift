@@ -139,6 +139,7 @@ func printHelp() {
     print("  shell              Open an interactive shell")
     print("  exec <command>     Run a command in the VM")
     print("  setup              Download and prepare the VM disk image")
+    print("  update             Re-download rootfs and rebuild disk image")
     print("  uninstall          Remove all msl data")
     print("  check-virt         Check if virtualization is supported")
     print("  version            Show version")
@@ -247,6 +248,15 @@ func main() {
         } catch {
             fputs("\(error.localizedDescription)\n", stderr)
             mslLog("setup failed: \(error.localizedDescription)")
+            exit(1)
+        }
+
+    case "update":
+        let (ds, rs, cc) = parseSetupFlags(args)
+        do {
+            try runUpdate(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
+        } catch {
+            fputs("\(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
