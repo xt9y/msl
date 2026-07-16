@@ -208,8 +208,10 @@ class MSLVM: NSObject {
         while true {
             let remaining = max(0.0, deadline.timeIntervalSinceNow)
             if remaining <= 0 { break }
-            let n = read(fd, &outBuf, outBuf.count)
-            let savedErrno = errno
+            let (n, savedErrno) = outBuf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                let bytesRead = read(fd, ptr.baseAddress!, ptr.count)
+                return (bytesRead, errno)
+            }
             if n > 0 { allOutput.append(outBuf, count: n) }
             else if n == 0 { break }
             else if savedErrno == EAGAIN || savedErrno == EWOULDBLOCK {

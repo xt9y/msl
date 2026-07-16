@@ -152,8 +152,10 @@ class Daemon {
                         _ = fcntl(vsockFD, F_SETFL, fcntl(vsockFD, F_GETFL, 0) | O_NONBLOCK)
 
                         while true {
-                            let n = read(cliFD, &buf, bufsize)
-                            let nErrno = errno
+                            let (n, nErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                                let bytesRead = read(cliFD, ptr.baseAddress!, ptr.count)
+                                return (bytesRead, errno)
+                            }
                             if n > 0 {
                                 var pos = 0
                                 while pos < n {
@@ -170,8 +172,10 @@ class Daemon {
                                 break
                             }
 
-                            let vn = read(vsockFD, &buf, bufsize)
-                            let vnErrno = errno
+                            let (vn, vnErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                                let bytesRead = read(vsockFD, ptr.baseAddress!, ptr.count)
+                                return (bytesRead, errno)
+                            }
                             if vn > 0 {
                                 var pos = 0
                                 while pos < vn {
@@ -302,8 +306,10 @@ class Daemon {
                     commandLoop: while true {
                         let remaining = max(0.0, deadline.timeIntervalSinceNow)
                         if remaining <= 0 { timedOut = true; break commandLoop }
-                        let n = read(fd, &outBuf, outBuf.count)
-                        let savedErrno = errno
+                        let (n, savedErrno) = outBuf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                            let bytesRead = read(fd, ptr.baseAddress!, ptr.count)
+                            return (bytesRead, errno)
+                        }
                         if n > 0 {
                             if allOutput.count < maxOutputBytes {
                                 let room = maxOutputBytes - allOutput.count
