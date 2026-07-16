@@ -72,7 +72,7 @@ jobs:
           fi
           echo "Verifying fingerprint..."
           EXPECTED=$(echo "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')
-          ACTUAL=$(gpg --list-keys --with-colons --fingerprint "$FINGERPRINT" 2>/dev/null | grep '^fpr:' | head -1 | cut -d: -f10)
+          ACTUAL=$(gpg --list-keys --with-colons --fingerprint "$FINGERPRINT" 2>/dev/null | grep '^fpr:' | head -1 | cut -d: -f10 | tr '[:upper:]' '[:lower:]')
           if [ "$ACTUAL" = "$EXPECTED" ]; then
             echo "PASS: fingerprint matches Arch Linux ARM Build System signing key"
           else
