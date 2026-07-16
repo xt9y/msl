@@ -82,6 +82,11 @@ class Daemon {
 
         while shouldKeepRunning {
             ensureDisplayBridge()
+            if FileManager.default.fileExists(atPath: "\(dataDir)/vm.dead") {
+                mslLog("VM died — shutting down daemon")
+                shouldKeepRunning = false
+                break
+            }
             try await Task.sleep(nanoseconds: 30 * NSEC_PER_SEC)
         }
 
@@ -139,7 +144,13 @@ class Daemon {
                 switch result {
                 case .success(let (handle, vsockFd)):
                     DispatchQueue.global().async { [self] in
-                        if !writeMslToken(vsockFd) { close(client); return }
+                        if !writeMslToken(vsockFd) {
+                            DispatchQueue.main.async { [self] in
+                                self.vm.closeVsock(handle: handle)
+                            }
+                            close(client)
+                            return
+                        }
                         var mode: UInt8 = 0x01
                         _ = write(vsockFd, &mode, 1)
                         var ok: UInt8 = 1
@@ -148,48 +159,56 @@ class Daemon {
                         var buf = [UInt8](repeating: 0, count: bufsize)
                         let cliFD = client, vsockFD = vsockFd
 
-                        _ = fcntl(cliFD, F_SETFL, fcntl(cliFD, F_GETFL, 0) | O_NONBLOCK)
-                        _ = fcntl(vsockFD, F_SETFL, fcntl(vsockFD, F_GETFL, 0) | O_NONBLOCK)
-
                         while true {
-                            let (n, nErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
-                                let bytesRead = read(cliFD, ptr.baseAddress!, ptr.count)
-                                return (bytesRead, errno)
-                            }
-                            if n > 0 {
-                                var pos = 0
-                                while pos < n {
-                                    let w = buf.withUnsafeBytes { raw in
-                                        write(vsockFD, raw.baseAddress! + pos, n - pos)
-                                    }
-                                    if w <= 0 { break }
-                                    pos += w
+                            var pfds = [
+                                pollfd(fd: cliFD, events: Int16(POLLIN), revents: 0),
+                                pollfd(fd: vsockFD, events: Int16(POLLIN), revents: 0)
+                            ]
+                            let pret = poll(&pfds, 2, 100)
+                            if pret < 0 { break }
+
+                            if pfds[0].revents & Int16(POLLIN) != 0 {
+                                let (n, nErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                                    let bytesRead = read(cliFD, ptr.baseAddress!, ptr.count)
+                                    return (bytesRead, errno)
                                 }
-                                if pos < n { break }
-                            } else if n == 0 {
-                                break
-                            } else if nErrno != EAGAIN && nErrno != EWOULDBLOCK {
-                                break
+                                if n > 0 {
+                                    var pos = 0
+                                    while pos < n {
+                                        let w = buf.withUnsafeBytes { raw in
+                                            write(vsockFD, raw.baseAddress! + pos, n - pos)
+                                        }
+                                        if w <= 0 { break }
+                                        pos += w
+                                    }
+                                    if pos < n { break }
+                                } else if n == 0 {
+                                    break
+                                } else if nErrno != EAGAIN && nErrno != EWOULDBLOCK {
+                                    break
+                                }
                             }
 
-                            let (vn, vnErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
-                                let bytesRead = read(vsockFD, ptr.baseAddress!, ptr.count)
-                                return (bytesRead, errno)
-                            }
-                            if vn > 0 {
-                                var pos = 0
-                                while pos < vn {
-                                    let w = buf.withUnsafeBytes { raw in
-                                        write(cliFD, raw.baseAddress! + pos, vn - pos)
-                                    }
-                                    if w <= 0 { break }
-                                    pos += w
+                            if pfds[1].revents & Int16(POLLIN) != 0 {
+                                let (vn, vnErrno) = buf.withUnsafeMutableBytes { ptr -> (Int, Int32) in
+                                    let bytesRead = read(vsockFD, ptr.baseAddress!, ptr.count)
+                                    return (bytesRead, errno)
                                 }
-                                if pos < vn { break }
-                            } else if vn == 0 {
-                                break
-                            } else if vnErrno != EAGAIN && vnErrno != EWOULDBLOCK {
-                                break
+                                if vn > 0 {
+                                    var pos = 0
+                                    while pos < vn {
+                                        let w = buf.withUnsafeBytes { raw in
+                                            write(cliFD, raw.baseAddress! + pos, vn - pos)
+                                        }
+                                        if w <= 0 { break }
+                                        pos += w
+                                    }
+                                    if pos < vn { break }
+                                } else if vn == 0 {
+                                    break
+                                } else if vnErrno != EAGAIN && vnErrno != EWOULDBLOCK {
+                                    break
+                                }
                             }
                         }
                         DispatchQueue.main.async { [self] in

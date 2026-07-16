@@ -425,10 +425,17 @@ WantedBy=multi-user.target
         // Only accept 6.8.x kernels (gzip raw format, known to work)
         return parts.count >= 2 && parts[0] == 6 && parts[1] == 8
     }
-    guard !discovered.isEmpty else {
-        throw MslError("no compatible 6.8.x kernel found in Ubuntu ports pool — check https://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux/")
+    let kernelVersions: [(String, String)]
+    if !discovered.isEmpty {
+        kernelVersions = discovered
+    } else {
+        mslLog("kernel auto-discovery failed — using hardcoded fallback versions")
+        kernelVersions = [
+            ("6.8.0-53-generic", "6.8.0-53.55"),
+            ("6.8.0-51-generic", "6.8.0-51.53"),
+            ("6.8.0-45-generic", "6.8.0-45.47"),
+        ]
     }
-    let kernelVersions = discovered
     var kernelDownloaded = false
     var kernelVer = ""
     let kernelDeb = "\(tmpdir)/kernel.deb"

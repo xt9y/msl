@@ -27,10 +27,21 @@ static char      g_display[64] = {0};
 static unsigned char g_token[TOKEN_SIZE] = {0};
 static int       g_token_bytes = 0;  /* 0 = not loaded, >0 = loaded with that many bytes */
 
+static volatile sig_atomic_t g_cmd_pid = 0;
+
 static void handle_sigchld(int sig) {
     (void)sig;
     while (waitpid(-1, NULL, WNOHANG) > 0) {
         if (g_child_count > 0) g_child_count--;
+    }
+}
+
+static void handle_sigalrm(int sig) {
+    (void)sig;
+    pid_t pid = g_cmd_pid;
+    if (pid > 0) {
+        kill(-pid, SIGKILL);
+        kill(pid, SIGKILL);
     }
 }
 
@@ -279,7 +290,19 @@ shell_done:
     pid_t pid = fork();
     if (pid < 0) { close(out_pipe[0]); close(out_pipe[1]); close(err_pipe[0]); close(err_pipe[1]); sigprocmask(SIG_SETMASK, &old_sigchld, NULL); return; }
 
+    /* 120s command ceiling — host budget is 30s, this is generous overkill */
+    struct sigaction sa_alrm, sa_alrm_old;
+    memset(&sa_alrm, 0, sizeof(sa_alrm));
+    sa_alrm.sa_handler = handle_sigalrm;
+    sa_alrm.sa_flags = SA_RESETHAND;
+    sigaction(SIGALRM, &sa_alrm, &sa_alrm_old);
+    g_cmd_pid = pid;
+    alarm(120);
+
     if (pid == 0) {
+        /* Child resets the alarm — it should not inherit the parent's timer */
+        alarm(0);
+        g_cmd_pid = 0;
         close(out_pipe[0]); close(err_pipe[0]);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
@@ -351,6 +374,9 @@ shell_done:
         waitpid(pid, &status, 0);
     }
     sigprocmask(SIG_SETMASK, &old_sigchld, NULL);
+    alarm(0);
+    g_cmd_pid = 0;
+    sigaction(SIGALRM, &sa_alrm_old, NULL);
     uint32_t exit_code = htonl(WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 255));
 
     xwrite(client_fd, &exit_code, 4);

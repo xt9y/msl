@@ -85,9 +85,14 @@ class IPCServer {
             }
             accum.append(readBuf, count: n)
 
-            // Process complete frames
+    // Process complete frames (cap at 100MB to prevent OOM on malformed length)
             while accum.count >= 4 {
                 let len = UInt32(bigEndian: accum.withUnsafeBytes { $0.load(as: UInt32.self) })
+                guard len <= 100 * 1024 * 1024 else {
+                    clientSource.cancel()
+                    close(client)
+                    return
+                }
                 let total = Int(4 + len)
                 guard accum.count >= total else { break }
 
