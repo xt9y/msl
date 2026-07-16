@@ -177,15 +177,14 @@ class MSLVM: NSObject {
                 vsock.connect(toPort: 9999, completion: { handle, fd in
                     cont.resume(returning: (handle, fd, nil))
                 }, errorHandler: { error in
-                    // Use a sentinel: fd=-1 signals failure
-                    cont.resume(returning: (UnsafeMutableRawPointer(bitPattern: 0)!, -1, error))
+                    cont.resume(returning: (UnsafeMutableRawPointer(bitPattern: 1)!, -1, error))
                 })
             }
         }
         if result.1 < 0 { return (Data(), 255) }
         let handle = result.0
         let fd = result.1
-        defer { self.closeVsock(handle: handle) }
+        defer { if fd >= 0 { self.closeVsock(handle: handle) } }
 
         if !writeMslToken(fd) { return (Data(), 255) }
 
