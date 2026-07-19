@@ -1,0 +1,16 @@
+build/
+Sources/Version.swift
+.release.sh
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Editor
+.idea/
+.vscode/
+*.xcuserdata
+*.xcworkspace
+xcuserdata/
