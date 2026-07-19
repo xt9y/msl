@@ -101,7 +101,10 @@ static void probe_gateway(void) {
 static void xwrite(int fd, const void *buf, size_t len) {
     while (len > 0) {
         ssize_t n = write(fd, buf, len);
-        if (n <= 0) return;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
         buf = (const char *)buf + n;
         len -= n;
     }
@@ -111,10 +114,37 @@ static ssize_t xread(int fd, void *buf, size_t count) {
     size_t remaining = count;
     while (remaining > 0) {
         ssize_t n = read(fd, (char *)buf + (count - remaining), remaining);
-        if (n <= 0) return -1;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;
         remaining -= n;
     }
     return count;
+}
+
+/* Read with EINTR retry — returns same as read() */
+static ssize_t safe_read(int fd, void *buf, size_t count) {
+    ssize_t n;
+    do {
+        n = read(fd, buf, count);
+    } while (n < 0 && errno == EINTR);
+    return n;
+}
+
+/* Write all bytes with EINTR retry, returns n written on success, -1 on error */
+static ssize_t safe_write(int fd, const void *buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = write(fd, (const char *)buf + total, len - total);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        total += n;
+    }
+    return (ssize_t)total;
 }
 
 static void serve_client(int client_fd) {
@@ -136,8 +166,7 @@ static void serve_client(int client_fd) {
     uint16_t ws_row = 24, ws_col = 80;
     uint8_t mode;
     uint8_t first_byte;
-    ssize_t n = read(client_fd, &first_byte, 1);
-    if (n != 1) return;
+    if (safe_read(client_fd, &first_byte, 1) != 1) return;
 
     if (first_byte == 0x02) {
         uint8_t ws_buf[4];
@@ -208,12 +237,12 @@ static void serve_client(int client_fd) {
                 ssize_t n;
                 if (ws_pending_len > 0) {
                     memcpy(buf, ws_pending, ws_pending_len);
-                    ssize_t more = read(client_fd, buf + ws_pending_len, BUF_SIZE - ws_pending_len);
+                    ssize_t more = safe_read(client_fd, buf + ws_pending_len, BUF_SIZE - ws_pending_len);
                     if (more <= 0) { ws_pending_len = 0; goto shell_done; }
                     n = ws_pending_len + more;
                     ws_pending_len = 0;
                 } else {
-                    n = read(client_fd, buf, BUF_SIZE);
+                    n = safe_read(client_fd, buf, BUF_SIZE);
                 }
                 if (n > 0) {
                     ssize_t off = 0;
@@ -230,26 +259,16 @@ static void serve_client(int client_fd) {
                         ws_pending_len = n;
                         continue;
                     }
-                    ssize_t pos = off;
-                    while (pos < n) {
-                        ssize_t w = write(master_fd, buf + pos, n - pos);
-                        if (w <= 0) goto shell_done;
-                        pos += w;
-                    }
+                    if (safe_write(master_fd, buf + off, n - off) < 0) goto shell_done;
                 } else {
                     goto shell_done;
                 }
             }
 
             if (FD_ISSET(master_fd, &fds)) {
-                ssize_t n = read(master_fd, buf, BUF_SIZE);
+                ssize_t n = safe_read(master_fd, buf, BUF_SIZE);
                 if (n > 0) {
-                    ssize_t pos = 0;
-                    while (pos < n) {
-                        ssize_t w = write(client_fd, buf + pos, n - pos);
-                        if (w <= 0) goto shell_done;
-                        pos += w;
-                    }
+                    if (safe_write(client_fd, buf, n) < 0) goto shell_done;
                 } else if (n == 0 || (n < 0 && errno == EIO)) {
                     goto shell_done;
                 } else if (n < 0 && (errno == EINTR)) {
@@ -337,10 +356,10 @@ shell_done:
 
         bool data = false;
         if (out_fd >= 0 && FD_ISSET(out_fd, &fds)) {
-            n = read(out_fd, buf, BUF_SIZE);
-            if (n > 0) {
+            ssize_t rn = safe_read(out_fd, buf, BUF_SIZE);
+            if (rn > 0) {
                 if (total_sent < max_output) {
-                    size_t to_send = (total_sent + n > max_output) ? max_output - total_sent : n;
+                    size_t to_send = (total_sent + rn > max_output) ? max_output - total_sent : rn;
                     xwrite(client_fd, buf, to_send);
                     total_sent += to_send;
                     data = true;
@@ -348,10 +367,10 @@ shell_done:
             } else { close(out_fd); out_fd = -1; }
         }
         if (err_fd >= 0 && FD_ISSET(err_fd, &fds)) {
-            n = read(err_fd, buf, BUF_SIZE);
-            if (n > 0) {
+            ssize_t rn = safe_read(err_fd, buf, BUF_SIZE);
+            if (rn > 0) {
                 if (total_sent < max_output) {
-                    size_t to_send = (total_sent + n > max_output) ? max_output - total_sent : n;
+                    size_t to_send = (total_sent + rn > max_output) ? max_output - total_sent : rn;
                     xwrite(client_fd, buf, to_send);
                     total_sent += to_send;
                     data = true;

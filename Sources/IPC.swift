@@ -116,10 +116,20 @@ class IPCClient {
         self.path = path
     }
 
-    func send(request: Data) throws -> [IPCMessage] {
+    func send(request: Data, timeout: TimeInterval = 30) throws -> [IPCMessage] {
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else { throw MslError("socket: \(String(cString: strerror(errno)))") }
         defer { close(sock) }
+
+        // Set send + receive timeouts on the socket so we don't hang forever
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+        let tvSize = socklen_t(MemoryLayout.size(ofValue: tv))
+        _ = withUnsafePointer(to: &tv) {
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, $0, tvSize)
+        }
+        _ = withUnsafePointer(to: &tv) {
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, $0, tvSize)
+        }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
@@ -150,16 +160,27 @@ class IPCClient {
             remaining = remaining.dropFirst(n)
         }
 
-        // Read all response frames
+        // Read all response frames with timeout
         var messages = [IPCMessage]()
         var buf = [UInt8](repeating: 0, count: 131072)
         var accum = Data()
+        let deadline = Date().addingTimeInterval(timeout)
 
-        while true {
+        while Date() < deadline {
             let n = read(sock, &buf, buf.count)
-            guard n > 0 else { break }
-
-            accum.append(buf, count: n)
+            if n > 0 {
+                accum.append(buf, count: n)
+            } else if n == 0 {
+                break
+            } else {
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    if messages.isEmpty {
+                        throw MslError("read timed out after \(Int(timeout))s")
+                    }
+                    break
+                }
+                throw MslError("read: \(String(cString: strerror(errno)))")
+            }
 
             while true {
                 guard accum.count >= 8 else { break }
@@ -184,6 +205,9 @@ class IPCClient {
             }
         }
 
+        if messages.isEmpty {
+            throw MslError("read timed out after \(Int(timeout))s")
+        }
         return messages
     }
 }

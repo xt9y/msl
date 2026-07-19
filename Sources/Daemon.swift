@@ -18,8 +18,13 @@ class Daemon {
         self.ipc = IPCServer(path: "\(dataDir)/msld.sock")
     }
 
+    var shellListenerSock: Int32 = -1
+
     func requestStop() {
         mslLog("received shutdown signal")
+        sigSourceTerm?.cancel()
+        sigSourceInt?.cancel()
+        stopShellListener()
         Task {
             do {
                 try await vm.stop()
@@ -48,7 +53,12 @@ class Daemon {
         sigSourceInt = intSource
 
         try state.writePID()
-        defer { state.removePID() }
+        defer {
+            sigSourceTerm?.cancel()
+            sigSourceInt?.cancel()
+            stopShellListener()
+            state.removePID()
+        }
 
         try? FileManager.default.removeItem(atPath: "\(dataDir)/vm.dead")
         ensureDisplayBridge()
@@ -107,11 +117,20 @@ class Daemon {
         else { mslLog("pacman-key init failed (exit \(code)): \(String(data: out, encoding: .utf8) ?? "")") }
     }
 
+    private func stopShellListener() {
+        if shellListenerSock >= 0 {
+            close(shellListenerSock)
+            shellListenerSock = -1
+        }
+        unlink("\(dataDir)/msld.shell.sock")
+    }
+
     private func startShellListener() {
         let shellPath = "\(dataDir)/msld.shell.sock"
         unlink(shellPath)
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else { return }
+        shellListenerSock = sock
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathSize = MemoryLayout.size(ofValue: addr.sun_path)
@@ -138,11 +157,10 @@ class Daemon {
             vm.connectVsock(port: 9999) { [self] result in
                 switch result {
                 case .success(let (handle, vsockFd)):
-                    DispatchQueue.global().async { [self] in
+                    let cleanup = { DispatchQueue.main.async { self.vm.closeVsock(handle: handle) } }
+                    DispatchQueue.global().async {
                         if !writeMslToken(vsockFd) {
-                            DispatchQueue.main.async { [self] in
-                                self.vm.closeVsock(handle: handle)
-                            }
+                            cleanup()
                             close(client)
                             return
                         }
@@ -159,7 +177,10 @@ class Daemon {
                                 pollfd(fd: cliFD, events: Int16(POLLIN), revents: 0),
                                 pollfd(fd: vsockFD, events: Int16(POLLIN), revents: 0)
                             ]
-                            let pret = poll(&pfds, 2, 100)
+                            var pret: Int32
+                            repeat {
+                                pret = poll(&pfds, 2, 100)
+                            } while pret < 0 && errno == EINTR
                             if pret < 0 { break }
 
                             if pfds[0].revents & Int16(POLLIN) != 0 {
@@ -200,9 +221,7 @@ class Daemon {
                                 } else if vnErrno != EAGAIN && vnErrno != EWOULDBLOCK { break }
                             }
                         }
-                        DispatchQueue.main.async { [self] in
-                            self.vm.closeVsock(handle: handle)
-                        }
+                        cleanup()
                         close(client)
                     }
                 case .failure(_):
