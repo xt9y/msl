@@ -1,37 +1,49 @@
 import Foundation
 
 let mslLogPath = "/tmp/msl-daemon.log"
+let mslLogQueue = DispatchQueue(label: "msl.log")
+let mslLogFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    return f
+}()
 
 func mslLog(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let timestamp = mslLogFormatter.string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     guard let data = line.data(using: .utf8) else { return }
-    if !FileManager.default.fileExists(atPath: mslLogPath) {
-        FileManager.default.createFile(atPath: mslLogPath, contents: nil)
-    }
-    if let fh = FileHandle(forWritingAtPath: mslLogPath) {
-        let maxSize: UInt64 = 1024 * 1024
-        let keepSize: UInt64 = 512 * 1024
-        let size = (try? FileManager.default.attributesOfItem(atPath: mslLogPath)[.size] as? UInt64) ?? 0
-        if size + UInt64(data.count) > maxSize {
-            fh.seekToEndOfFile()
-            let offset = size > keepSize ? size - keepSize : 0
-            fh.truncateFile(atOffset: offset)
+    mslLogQueue.sync {
+        if !FileManager.default.fileExists(atPath: mslLogPath) {
+            FileManager.default.createFile(atPath: mslLogPath, contents: nil)
         }
+        guard let fh = FileHandle(forWritingAtPath: mslLogPath) else { return }
+        defer { fh.closeFile() }
+        let maxSize: UInt64 = 1024 * 1024
         fh.seekToEndOfFile()
+        if fh.offsetInFile + UInt64(data.count) > maxSize {
+            fh.truncateFile(atOffset: 0)
+            fh.seekToEndOfFile()
+        }
         fh.write(data)
-        fh.closeFile()
     }
 }
 
 @discardableResult
-func shell(_ command: String) -> Int32 {
+func shell(_ command: String, quiet: Bool = false) -> Int32 {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/bin/bash")
     task.arguments = ["-c", command]
-    guard (try? task.run()) != nil else { return -1 }
+    do {
+        try task.run()
+    } catch {
+        if !quiet { mslLog("shell command failed: \(error.localizedDescription)") }
+        return -1
+    }
     task.waitUntilExit()
-    return task.terminationStatus
+    let rc = task.terminationStatus
+    if rc != 0 && !quiet {
+        mslLog("shell command (exit \(rc)): \(command)")
+    }
+    return rc
 }
 
 /// Run a shell command and throw if it fails.
@@ -599,7 +611,7 @@ private func ensureMke2fs() throws -> String {
     if let p = findMke2fs() { return p }
     print("  Installing e2fsprogs...")
     fflush(stdout)
-    shell("brew install e2fsprogs 2>/dev/null")
+    shell("brew install e2fsprogs 2>/dev/null", quiet: true)
     if let p = findMke2fs() { return p }
     throw MslError("mke2fs not found — install e2fsprogs via 'brew install e2fsprogs'")
 }
@@ -628,15 +640,15 @@ func ensureDisplayBridge() {
     guard FileManager.default.fileExists(atPath: x11Socket) else { return }
 
     // Check if something is already listening on 6000
-    if shell("lsof -i :6000 >/dev/null 2>&1") == 0 { return }
+    if shell("lsof -i :6000 >/dev/null 2>&1", quiet: true) == 0 { return }
 
     // Ensure socat is installed
-    if shell("which socat >/dev/null 2>&1") != 0 {
+    if shell("which socat >/dev/null 2>&1", quiet: true) != 0 {
         print("  Installing socat...")
         fflush(stdout)
-        shell("brew install socat 2>/dev/null")
+        shell("brew install socat 2>/dev/null", quiet: true)
     }
-    if shell("which socat >/dev/null 2>&1") != 0 {
+    if shell("which socat >/dev/null 2>&1", quiet: true) != 0 {
         fputs("  warning: socat not found — GUI apps won't display\n", stderr)
         return
     }
@@ -652,7 +664,7 @@ private func ensureXQuartz() {
     if findXQuartzApp() == nil {
         print("  Installing XQuartz (for GUI display forwarding)...")
         fflush(stdout)
-        shell("brew install --cask xquartz 2>&1")
+        shell("brew install --cask xquartz 2>&1", quiet: true)
         if findXQuartzApp() == nil {
             print("  warning: XQuartz not found — install manually from https://www.xquartz.org")
             print("           GUI apps from the VM won't display until XQuartz is installed.")
@@ -660,11 +672,11 @@ private func ensureXQuartz() {
         }
     }
     print("  Starting XQuartz...")
-    shell("open -a XQuartz 2>/dev/null")
+    shell("open -a XQuartz 2>/dev/null", quiet: true)
     // Wait for the X server to come up (xhost will fail until it's ready)
     let xhost = "/opt/X11/bin/xhost"
     for _ in 0..<30 {
-        if shell("\(xhost) + >/dev/null 2>&1") == 0 {
+        if shell("\(xhost) + >/dev/null 2>&1", quiet: true) == 0 {
             ensureDisplayBridge()
             print("  -> XQuartz ready (xhost +, TCP bridge on port 6000)")
             return

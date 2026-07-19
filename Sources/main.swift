@@ -26,9 +26,13 @@ func sendWinsize(sock: Int32) {
     var marker: UInt8 = 0x02
     var rowsBE = rows.bigEndian
     var colsBE = cols.bigEndian
-    _ = withUnsafePointer(to: &marker) { write(sock, $0, 1) }
-    _ = withUnsafeBytes(of: &rowsBE) { write(sock, $0.baseAddress!, 2) }
-    _ = withUnsafeBytes(of: &colsBE) { write(sock, $0.baseAddress!, 2) }
+    var n: Int
+    repeat { n = withUnsafePointer(to: &marker) { write(sock, $0, 1) } }
+    while n < 0 && errno == EINTR
+    repeat { n = withUnsafeBytes(of: &rowsBE) { write(sock, $0.baseAddress!, 2) } }
+    while n < 0 && errno == EINTR
+    repeat { n = withUnsafeBytes(of: &colsBE) { write(sock, $0.baseAddress!, 2) } }
+    while n < 0 && errno == EINTR
 }
 
 func runShell() {
@@ -60,7 +64,9 @@ func runShell() {
     var okReceived = false
     for _ in 0..<300 {
         var pfd = pollfd(fd: sock, events: Int16(POLLIN), revents: 0)
-        let pr = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) }
+        var pr: Int32
+        repeat { pr = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) } }
+        while pr < 0 && errno == EINTR
         if pr > 0 {
             let n = read(sock, &ok, 1)
             if n == 1 && ok == 1 { okReceived = true; break }
@@ -85,22 +91,51 @@ func runShell() {
         signal(SIGHUP) { _ in restoreTerminal(); exit(129) }
 
         shellWinsizeNeedsUpdate = false
-        signal(SIGWINCH) { _ in shellWinsizeNeedsUpdate = true }
+        signal(SIGWINCH, SIG_IGN)
+        let winchSource = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .main)
+        winchSource.setEventHandler { shellWinsizeNeedsUpdate = true }
+        winchSource.activate()
+    }
+
+    func readAll(_ fd: Int32, _ buf: inout [UInt8]) -> Int {
+        while true {
+            let n = read(fd, &buf, buf.count)
+            if n < 0 && errno == EINTR { continue }
+            return n
+        }
+    }
+
+    func writeAll(_ fd: Int32, _ buf: UnsafeRawBufferPointer) -> Int {
+        var pos = 0
+        while pos < buf.count {
+            let n = write(fd, buf.baseAddress! + pos, buf.count - pos)
+            if n < 0 {
+                if errno == EINTR { continue }
+                return n
+            }
+            if n == 0 { return pos }
+            pos += n
+        }
+        return pos
     }
 
     var running = true
     var buf = [UInt8](repeating: 0, count: 65536)
     while running {
         var pfd = pollfd(fd: sock, events: Int16(POLLIN), revents: 0)
-        let r1 = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) }
+        var r1: Int32
+        repeat { r1 = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) } }
+        while r1 < 0 && errno == EINTR
         if r1 > 0 {
-            let n = read(sock, &buf, buf.count)
-            if n > 0 { _ = write(STDOUT_FILENO, buf, n) } else { running = false }
+            let n = readAll(sock, &buf)
+            if n > 0 { _ = buf.withUnsafeBytes { writeAll(STDOUT_FILENO, $0) } } else { running = false }
         } else if r1 < 0 { break }
         pfd = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
-        let r2 = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) }
+        var r2: Int32
+        repeat { r2 = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 100) } }
+        while r2 < 0 && errno == EINTR
         if r2 > 0 {
-            let n = read(STDIN_FILENO, &buf, buf.count)
+            let n = readAll(STDIN_FILENO, &buf)
             if n > 0 {
                 var written = 0
                 if shellWinsizeNeedsUpdate && isTTY {
@@ -109,7 +144,7 @@ func runShell() {
                 }
                 while written < n {
                     let w = buf.withUnsafeBytes { raw in
-                        write(sock, raw.baseAddress! + written, n - written)
+                        writeAll(sock, UnsafeRawBufferPointer(rebasing: raw[written..<n]))
                     }
                     if w <= 0 { running = false; break }
                     written += w
@@ -117,10 +152,15 @@ func runShell() {
             } else if n == 0 {
                 shutdown(sock, SHUT_WR)
                 var pfd2 = pollfd(fd: sock, events: Int16(POLLIN), revents: 0)
-                while withUnsafeMutablePointer(to: &pfd2, { poll($0, 1, 1000) }) > 0 {
-                    let n2 = read(sock, &buf, buf.count)
+                var pr2: Int32
+                repeat { pr2 = withUnsafeMutablePointer(to: &pfd2) { poll($0, 1, 1000) } }
+                while pr2 < 0 && errno == EINTR
+                while pr2 > 0 {
+                    let n2 = readAll(sock, &buf)
                     if n2 <= 0 { break }
-                    _ = write(STDOUT_FILENO, buf, n2)
+                    _ = buf.withUnsafeBytes { writeAll(STDOUT_FILENO, $0) }
+                    repeat { pr2 = withUnsafeMutablePointer(to: &pfd2) { poll($0, 1, 1000) } }
+                    while pr2 < 0 && errno == EINTR
                 }
                 running = false
             } else { running = false }
