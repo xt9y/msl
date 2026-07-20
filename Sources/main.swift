@@ -246,6 +246,46 @@ func startDaemonInBackground() {
     else { fputs("msl: VM booting in background (pid \(pid)) — use 'msl shell' to connect\n", stderr) }
 }
 
+func checkForUpdate() {
+    let cachePath = "\(dataDir)/.version-cache"
+    let cacheTTL: TimeInterval = 3600
+    let now = Date().timeIntervalSince1970
+
+    var latestTag: String?
+    if let data = try? Data(contentsOf: URL(fileURLWithPath: cachePath)),
+       let body = String(data: data, encoding: .utf8) {
+        let lines = body.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+        if lines.count == 2, let cachedAt = TimeInterval(lines[0]), now - cachedAt < cacheTTL {
+            latestTag = String(lines[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    if latestTag == nil,
+       let url = URL(string: "https://api.github.com/repos/xt9y/msl/tags"),
+       let data = try? Data(contentsOf: url),
+       let tags = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+        let verTags = tags.compactMap { ($0["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.hasPrefix("v") }
+        let latest = verTags.max { a, b in
+            let pa = a.dropFirst().split(separator: ".").compactMap { Int($0) }
+            let pb = b.dropFirst().split(separator: ".").compactMap { Int($0) }
+            guard pa.count == 3, pb.count == 3 else { return false }
+            return pa[0] < pb[0] || (pa[0] == pb[0] && pa[1] < pb[1]) || (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] < pb[2])
+        }
+        if let tag = latest {
+            latestTag = tag
+            try? "\(now)\n\(tag)".write(toFile: cachePath, atomically: true, encoding: .utf8)
+        }
+    }
+
+    guard let tag = latestTag, tag.hasPrefix("v") else { return }
+    let curParts = MSLVersion.split(separator: ".").compactMap { Int($0) }
+    let parts = String(tag.dropFirst()).split(separator: ".").compactMap { Int($0) }
+    guard parts.count == 3, curParts.count == 3 else { return }
+    if parts[0] > curParts[0] || (parts[0] == curParts[0] && parts[1] > curParts[1]) || (parts[0] == curParts[0] && parts[1] == curParts[1] && parts[2] > curParts[2]) {
+        fputs("msl: new version \(tag) available — update with 'brew upgrade msl msld'\n", stderr)
+    }
+}
+
 func main() {
     let args = CommandLine.arguments
 
@@ -254,6 +294,7 @@ func main() {
         print("Run 'msl help' for usage.")
         exit(0)
     }
+    checkForUpdate()
 
     switch args[1] {
     case "help":
