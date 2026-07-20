@@ -17,7 +17,7 @@ SWIFT_SRCS = \
 OBJC_SRCS = Sources/MSLVSOCK.m
 OBJC_HEADER = Sources/BridgingHeader.h
 
-all: $(PRODUCT) $(GUEST)
+all: $(PRODUCT) $(GUEST) sign-prod
 
 $(VERSION_FILE):
 	@echo 'import Foundation' > $(VERSION_FILE)
@@ -45,4 +45,8 @@ sign: $(PRODUCT)
 	codesign --entitlements Resources/msl.entitlements \
 		--force --sign "$(DEV_ID)" "$(PRODUCT)"
 
-.PHONY: all clean sign
+sign-prod: $(PRODUCT)
+	codesign --entitlements Resources/msl.entitlements \
+		--force --sign "-" "$(PRODUCT)"
+
+.PHONY: all clean sign sign-prod
