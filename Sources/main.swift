@@ -168,6 +168,7 @@ func printHelp() {
     print("  exec <command>     Run a command in the VM")
     print("  setup              Download and prepare the VM disk image")
     print("  update             Re-download rootfs and rebuild disk image")
+    print("  fix                Re-sign binary (restore virtualization entitlement)")
     print("  uninstall          Remove all msl data")
     print("  version            Show version")
     print("  help               Show this help")
@@ -375,6 +376,43 @@ func main() {
             print("Run 'brew uninstall msl msld' to remove the binaries.")
         } catch {
             fputs("msl: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+
+    case "fix":
+        let exe = resolveBinaryPath()
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>\
+        <key>com.apple.security.virtualization</key><true/>\
+        <key>com.apple.security.network.server</key><true/>\
+        <key>com.apple.security.network.client</key><true/>\
+        </dict></plist>
+        """
+        let tmp = "/tmp/msl-entitlements.plist"
+        try? plist.write(toFile: tmp, atomically: true, encoding: .utf8)
+        let cs = Process()
+        cs.launchPath = "/usr/bin/codesign"
+        cs.arguments = ["--entitlements", tmp, "--force", "--sign", "-", exe]
+        cs.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        cs.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        do {
+            try cs.run()
+            cs.waitUntilExit()
+        } catch {
+            fputs("msl: codesign failed: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+        try? FileManager.default.removeItem(atPath: tmp)
+        guard cs.terminationStatus == 0 else {
+            fputs("msl: codesign failed (exit \(cs.terminationStatus))\n", stderr)
+            exit(1)
+        }
+        if VZVirtualMachine.isSupported {
+            print("msl: virtualization entitlement restored — restart daemon with 'msl start'")
+        } else {
+            fputs("msl: virtualization entitlement still missing — try 'brew reinstall msl'\n", stderr)
             exit(1)
         }
 
