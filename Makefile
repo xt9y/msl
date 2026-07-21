@@ -48,6 +48,7 @@ $(PRODUCT): $(SWIFT_SRCS) $(OBJC_SRCS)
 $(GUEST): $(GUEST_SRC)
 	@mkdir -p $(BUILD_DIR)
 	$(ZIG) cc -target aarch64-linux-musl -static -Os -s -o $@ $(GUEST_SRC)
+	chmod +x $@
 
 clean:
 	rm -rf $(BUILD_DIR)

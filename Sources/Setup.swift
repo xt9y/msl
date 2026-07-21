@@ -907,24 +907,44 @@ func shellOutput(_ command: String) -> String {
 }
 
 private func findMsldBinary() -> String? {
+    let homebrewPaths = [
+        "/opt/homebrew/opt/msld/bin/msld",
+        "/opt/homebrew/bin/msld",
+        "/usr/local/bin/msld",
+    ]
+    let knownPaths = homebrewPaths.map { ($0 as NSString).standardizingPath }
+
     // Primary: msld in PATH (installed via homebrew formula)
     let which = shellOutput("which msld 2>/dev/null")
     if !which.isEmpty {
+        let p = (which as NSString).standardizingPath
         var st = stat()
-        if stat(which, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
-            return which
+        if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
+            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", p]) }
+            return p
         }
     }
+
+    // Try known Homebrew paths and chmod +x if found
+    for p in knownPaths {
+        var st = stat()
+        if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
+            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", p]) }
+            return p
+        }
+    }
+
     // Fallbacks for development builds
     let selfDir = resolveSelfDir()
-    let candidates = [
+    let devCandidates = [
         "\(selfDir)/msld",
         "\(FileManager.default.currentDirectoryPath)/build/msld",
     ]
-    for c in candidates {
+    for c in devCandidates {
         let expanded = (c as NSString).standardizingPath
         var st = stat()
         if stat(expanded, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
+            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", expanded]) }
             return expanded
         }
     }
