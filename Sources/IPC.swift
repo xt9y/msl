@@ -20,12 +20,15 @@ class IPCServer {
     private var source: DispatchSourceRead?
     private var clientSources: [Int32: DispatchSourceRead] = [:]
     private var clientLock = NSLock()
+    private let clientQueue = DispatchQueue(label: "msl.ipc.client", qos: .default, attributes: .concurrent)
+    private let ioQueue = DispatchQueue(label: "msl.ipc.io", qos: .default)
 
     init(path: String) {
         self.path = path
     }
 
     func start(handler: @escaping (Data, @escaping (Data) -> Void) -> Void) throws {
+        guard sock < 0 else { throw MslError("IPCServer already listening on \(path)") }
         unlink(path)
 
         var addr = sockaddr_un()
@@ -80,18 +83,20 @@ class IPCServer {
             return
         }
 
-        let clientSource = DispatchSource.makeReadSource(fileDescriptor: client, queue: .main)
+        let clientSource = DispatchSource.makeReadSource(fileDescriptor: client, queue: clientQueue)
 
         clientLock.lock()
         clientSources[client] = clientSource
         clientLock.unlock()
 
         let send: (Data) -> Void = { data in
-            var remaining = data
-            while !remaining.isEmpty {
-                let n = remaining.withUnsafeBytes { write(client, $0.baseAddress, remaining.count) }
-                if n <= 0 { break }
-                remaining = remaining.dropFirst(n)
+            self.ioQueue.async {
+                var remaining = data
+                while !remaining.isEmpty {
+                    let n = remaining.withUnsafeBytes { write(client, $0.baseAddress, remaining.count) }
+                    if n <= 0 { break }
+                    remaining = remaining.dropFirst(n)
+                }
             }
         }
 

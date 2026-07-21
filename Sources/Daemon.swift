@@ -153,12 +153,46 @@ class Daemon {
     private func ensurePacmanKeyring() async {
         let hostMarker = "\(dataDir)/.pacman-key.done"
         if FileManager.default.fileExists(atPath: hostMarker) { return }
+
+        // Host-side lock prevents concurrent pacman-key runs across
+        // daemon restarts / parallel invocations.  The guest also has a
+        // systemd one-shot (msl-pacman-key.service) that runs the same
+        // command — when both try pacman-key --init simultaneously they
+        // corrupt each other's gnupg state.
+        let lockPath = "\(dataDir)/.pacman-key.lock"
+        let lockFD = open(lockPath, O_WRONLY | O_CREAT | O_CLOEXEC, 0o644)
+        if lockFD < 0 { return }
+        defer { close(lockFD) }
+        // Non-blocking exclusive lock — if another process holds the lock,
+        // skip (they will write the hostMarker when done).
+        if flock(lockFD, LOCK_EX | LOCK_NB) != 0 { return }
+
+        // Re-check guest marker under lock — another process may have
+        // finished while we were waiting.
         let guestMarker = "/var/lib/msl-pacman-key.done"
         let (_, checkExit) = await vm.execOnGuest("test -f \(guestMarker)")
         if checkExit == 0 {
             try? "".write(toFile: hostMarker, atomically: true, encoding: .utf8)
             return
         }
+
+        // Check if the guest's own systemd service is already running
+        // pacman-key.  If so, wait for it to finish instead of duplicating.
+        let (_, alreadyRunning) = await vm.execOnGuest("pgrep -x pacman-key >/dev/null 2>&1")
+        if alreadyRunning == 0 {
+            mslLog("pacman-key already running in guest — waiting up to 180s")
+            for _ in 0..<180 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let (_, done) = await vm.execOnGuest("test -f \(guestMarker)")
+                if done == 0 {
+                    try? "".write(toFile: hostMarker, atomically: true, encoding: .utf8)
+                    return
+                }
+                let (_, stillRunning) = await vm.execOnGuest("pgrep -x pacman-key >/dev/null 2>&1")
+                if stillRunning != 0 { break } // process finished but marker absent — fall through to run ourselves
+            }
+        }
+
         mslLog("initializing pacman keyring")
         let (out, code) = await vm.execOnGuest(pacmanKeySetupCommand, timeout: 180)
         if code == 0 { try? "".write(toFile: hostMarker, atomically: true, encoding: .utf8) }

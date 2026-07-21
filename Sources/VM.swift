@@ -179,20 +179,17 @@ class MSLVM: NSObject, @unchecked Sendable {
     }
 
     func execOnGuest(_ command: String, timeout: Double = 120) async -> (Data, UInt32) {
-        guard let vsock = vsock else { return (Data(), 255) }
-        let result: (UnsafeMutableRawPointer, Int32, Error?) = await withCheckedContinuation { cont in
-            DispatchQueue.main.async {
-                vsock.connect(toPort: 9999, completion: { handle, fd in
-                    cont.resume(returning: (handle, fd, nil))
-                }, errorHandler: { error in
-                    cont.resume(returning: (UnsafeMutableRawPointer(bitPattern: 1)!, -1, error))
-                })
-            }
+        guard vsock != nil else { return (Data(), 255) }
+        let handle: UnsafeMutableRawPointer
+        let fd: Int32
+        do {
+            let conn = try await connectVsock(port: 9999)
+            handle = conn.handle
+            fd = conn.fd
+        } catch {
+            return (Data(), 255)
         }
-        if result.1 < 0 { return (Data(), 255) }
-        let handle = result.0
-        let fd = result.1
-        defer { if fd >= 0 { self.closeVsock(handle: handle) } }
+        defer { self.closeVsock(handle: handle) }
 
         if !writeMslToken(fd) { return (Data(), 255) }
 

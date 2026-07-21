@@ -11,9 +11,23 @@ brew install msl
 ```
 
 
+## Requirements
+
+- **macOS 14+** (Sonoma) with Apple Silicon (M1/M2/M3/M4)
+- **Passwordless sudo** — `msl` runs the VM under Virtualization.framework,
+  which requires the com.apple.vm.networking entitlement; the daemon elevates
+  itself on first launch.  Run `sudo visudo` and add:
+  ```
+  youruser ALL=(ALL) NOPASSWD: /usr/local/bin/msld
+  ```
+  The path must match `which msld` (try `/opt/homebrew/bin/msld` on Apple
+  Silicon Homebrew).
+
+
 ## Setup
 
-Download the Arch Linux ARM image (~1GB) and configure VM resources:
+Download the Arch Linux ARM image (~1GB), kernel, and modules, then configure
+VM resources:
 
 ```bash
 msl setup
@@ -33,12 +47,15 @@ Configuration is stored in `~/.msl/config.json`.
 ## Usage
 
 ```bash
-msl start        # boot the VM
-msl shell        # interactive shell
-msl exec "cmd"   # run a command
-msl stop         # stop the VM
-msl status       # check if running
-msl help         # show help
+msl start        # boot the VM (daemon runs in background)
+msl shell        # interactive shell (like SSH)
+msl exec "cmd"   # run a command and print output
+msl stop         # graceful ACPI shutdown
+msl status       # check if the VM is running
+msl update       # download latest kernel/modules/Arch image
+msl fix          # re-sign entitlements (fixes "permission denied")
+msl check-virt   # verify Virtualization.framework support
+msl help         # show usage
 ```
 
 

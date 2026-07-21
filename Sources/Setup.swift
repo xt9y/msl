@@ -408,7 +408,7 @@ ExecStop=/usr/bin/iptables -F INPUT
 WantedBy=multi-user.target
 """
     try fwService.write(toFile: "\(tmpdir)/etc/systemd/system/msl-firewall.service", atomically: true, encoding: .utf8)
-    shell("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-firewall.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-firewall.service'")
+    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-firewall.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-firewall.service'")
 
     // Generate a random auth token for VSOCK connections. Written to both
     // the host (~/.msl/token) and the guest rootfs (/etc/msld-token).
@@ -494,7 +494,7 @@ WantedBy=multi-user.target
     WantedBy=multi-user.target
     """
     try svc.write(toFile: "\(tmpdir)/etc/systemd/system/msld.service", atomically: true, encoding: .utf8)
-    shell("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msld.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msld.service'")
+    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msld.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msld.service'")
 
     let pacmanKeySvc = """
     [Unit]
@@ -512,7 +512,7 @@ WantedBy=multi-user.target
     WantedBy=multi-user.target
     """
     try pacmanKeySvc.write(toFile: "\(tmpdir)/etc/systemd/system/msl-pacman-key.service", atomically: true, encoding: .utf8)
-    shell("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-pacman-key.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-pacman-key.service'")
+    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-pacman-key.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-pacman-key.service'")
     shell("mkdir -p '\(tmpdir)/var/lib'")
 
     print("  Adding kernel...")
@@ -573,13 +573,17 @@ WantedBy=multi-user.target
             let modulesSha = sha256ForDeb(url: modulesDebURL)
             try downloadWithChecksum(urls: [kernelDebURL], to: kernelDeb, expectedSha256: kernelSha)
             try downloadWithChecksum(urls: [modulesDebURL], to: modulesDeb, expectedSha256: modulesSha)
-            // GPG-verify the kernel deb against Ubuntu's signed checksums
-            do {
-                try verifyDebWithGPG(debPath: kernelDeb, debURL: kernelDebURL)
-                mslLog("kernel GPG signature verified")
-            } catch {
-                mslLog("kernel GPG verification failed: \(error.localizedDescription)")
-                // Non-fatal: SHA256 already matched; GPG is defense-in-depth
+            // GPG-verify both kernel and modules debs against Ubuntu's signed checksums
+            // Modules carry the VSOCK kernel modules that form the host-guest trust
+            // boundary — skipping verification here would be a critical blind spot.
+            for (label, deb, url) in [("kernel", kernelDeb, kernelDebURL), ("modules", modulesDeb, modulesDebURL)] {
+                do {
+                    try verifyDebWithGPG(debPath: deb, debURL: url)
+                    mslLog("\(label) GPG signature verified")
+                } catch {
+                    mslLog("\(label) GPG verification failed: \(error.localizedDescription)")
+                    // Non-fatal: SHA256 already matched; GPG is defense-in-depth
+                }
             }
             kernelVer = ver
             kernelDownloaded = true
@@ -643,10 +647,21 @@ WantedBy=multi-user.target
     }
     let modTarget = "\(tmpdir)/usr/lib/modules/\(kernelVer)"
     // Generate minimal modules metadata for VSOCK
+    // Detect whether the extracted modules use .ko.zst or .ko so we
+    // generate a correct modules.dep regardless of the shipping format.
+    let vsockDir = "\(modTarget)/kernel/net/vmw_vsock"
+    let ext: String
+    if fileExists("\(vsockDir)/vsock.ko.zst") {
+        ext = ".ko.zst"
+    } else if fileExists("\(vsockDir)/vsock.ko") {
+        ext = ".ko"
+    } else {
+        ext = ".ko"    // best guess; insmod fallback in the wrapper covers both
+    }
     let dep = """
-    kernel/net/vmw_vsock/vsock.ko.zst:
-    kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst: kernel/net/vmw_vsock/vsock.ko.zst
-    kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko.zst: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko.zst
+    kernel/net/vmw_vsock/vsock.ko\(ext):
+    kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext): kernel/net/vmw_vsock/vsock.ko\(ext)
+    kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko\(ext): kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext)
 
     """
     shell("mkdir -p '\(modTarget)' 2>/dev/null")

@@ -40,6 +40,7 @@ static unsigned char g_token[TOKEN_SIZE] = {0};
 static int       g_token_bytes = 0;  /* 0 = not loaded, >0 = loaded with that many bytes */
 
 static volatile sig_atomic_t g_cmd_pid = 0;
+static volatile sig_atomic_t g_alarm_fired = 0;
 
 static void handle_sigchld(int sig) {
     (void)sig;
@@ -50,6 +51,7 @@ static void handle_sigchld(int sig) {
 
 static void handle_sigalrm(int sig) {
     (void)sig;
+    g_alarm_fired = 1;
     pid_t pid = g_cmd_pid;
     if (pid > 0) {
         kill(-pid, SIGKILL);
@@ -118,7 +120,13 @@ static void xwrite(int fd, const void *buf, size_t len) {
     while (len > 0) {
         ssize_t n = write(fd, buf, len);
         if (n < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                /* If the alarm fired while we were blocked writing,
+                 * the command was already killed — stop forwarding
+                 * output and let the caller clean up. */
+                if (g_alarm_fired) return;
+                continue;
+            }
             return;
         }
         buf = (const char *)buf + n;
@@ -240,6 +248,11 @@ static void serve_client(int client_fd) {
             base = base ? base + 1 : shell;
             char name[64];
             snprintf(name, sizeof(name), "-%s", base);
+            /* Restore SIGCHLD mask inherited from parent before exec.
+             * Signal masks survive execve() — without this the shell
+             * and all its children run with SIGCHLD blocked, breaking
+             * job control and wait() notifications. */
+            sigprocmask(SIG_SETMASK, &old_sigchld, NULL);
             execl(shell, name, (char *)NULL);
             execl("/bin/sh", "-sh", (char *)NULL);
             _exit(127);
@@ -368,6 +381,8 @@ shell_done:
         if (g_display[0]) setenv("DISPLAY", g_display, 1);
         /* Become a process group leader so kill(-pid, SIGKILL) works */
         setpgid(0, 0);
+        /* Restore SIGCHLD mask — see shell fork comment above. */
+        sigprocmask(SIG_SETMASK, &old_sigchld, NULL);
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
@@ -508,7 +523,6 @@ int main(void) {
         }
 
         if (listen(fd, 128) < 0) {
-            int e = errno;
             close(fd);
             usleep(500000);
             continue;
