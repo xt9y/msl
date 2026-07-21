@@ -1,5 +1,6 @@
 build/
 Sources/Version.swift
+.zig-cache/
 
 # macOS
 .DS_Store

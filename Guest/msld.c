@@ -17,6 +17,7 @@
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 /*
  * Trust boundary: This daemon runs inside the guest VM. Every connection
@@ -495,6 +496,15 @@ int main(void) {
     load_token();
     probe_gateway();
     load_environment();
+
+    /* Ensure XDG_RUNTIME_DIR is set — needed by Vulkan/WSI and Mesa.
+     * /etc/environment may not include it on older disk images. */
+    if (!getenv("XDG_RUNTIME_DIR")) {
+        setenv("XDG_RUNTIME_DIR", "/run/user/0", 1);
+    }
+    /* Create the directory if it doesn't exist (idempotent). */
+    mkdir("/run/user", 0755);
+    mkdir("/run/user/0", 0755);
 
     int fd = -1;
     struct sockaddr_vm addr;

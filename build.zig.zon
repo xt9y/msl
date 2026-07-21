@@ -1,0 +1,6 @@
+.{
+    .name = "msl-guest",
+    .version = "1.7.3",
+    .minimum_zig_version = "0.14.0",
+    .paths = .{""},
+}

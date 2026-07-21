@@ -388,11 +388,12 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
     // Force Mesa software rendering (llvmpipe/lavapipe) system-wide.
     // LP_NUM_THREADS matches the guest CPU count for best performance.
-    let environment = "LIBGL_ALWAYS_SOFTWARE=1\n__GLX_VENDOR_LIBRARY_NAME=mesa\nVK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nLP_NUM_THREADS=\(cpuCores)\n"
+    let environment = "LIBGL_ALWAYS_SOFTWARE=1\n__GLX_VENDOR_LIBRARY_NAME=mesa\nVK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nLP_NUM_THREADS=\(cpuCores)\nXDG_RUNTIME_DIR=/run/user/0\n"
     try environment.write(toFile: "\(tmpdir)/etc/environment", atomically: true, encoding: .utf8)
     try? FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/profile.d", withIntermediateDirectories: true)
-    let mesaProfile = "export LIBGL_ALWAYS_SOFTWARE=1\nexport __GLX_VENDOR_LIBRARY_NAME=mesa\nexport VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nexport LP_NUM_THREADS=\(cpuCores)\n"
+    let mesaProfile = "export LIBGL_ALWAYS_SOFTWARE=1\nexport __GLX_VENDOR_LIBRARY_NAME=mesa\nexport VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nexport LP_NUM_THREADS=\(cpuCores)\nexport XDG_RUNTIME_DIR=/run/user/0\n"
     try mesaProfile.write(toFile: "\(tmpdir)/etc/profile.d/msl-mesa.sh", atomically: true, encoding: .utf8)
+    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/run/user/0", withIntermediateDirectories: true)
 
     // Guest firewall: drop all inbound on eth0 except established/related.
     // This is defense-in-depth; Virtualization.framework NAT already blocks
@@ -790,6 +791,11 @@ func ensureDisplayBridge() {
     let x11Socket = "/tmp/.X11-unix/X0"
     guard FileManager.default.fileExists(atPath: x11Socket) else { return }
 
+    // Disable X11 access control so the guest can connect.
+    // XQuartz resets this on restart, so we must re-apply it whenever
+    // the daemon detects XQuartz is up.
+    disableX11AccessControl()
+
     // Check if we already have a tracked socat process
     if gSocatPID > 0, kill(gSocatPID, 0) == 0 { return }
 
@@ -812,6 +818,40 @@ func ensureDisplayBridge() {
     print("  X11 bridge started (port 6000).")
 }
 
+/// Disable X11 access control so the guest VM can connect to XQuartz.
+///
+/// The naive `xhost +` fails when the system hostname (e.g. "foo.fritz.box")
+/// doesn't match the hostnames stored in ~/.Xauthority (e.g. "foo.local").
+/// xhost can't find the matching MIT-MAGIC-COOKIE-1 entry, connects without
+/// sending any auth, and the server rejects it.
+///
+/// Fix: extract the first cookie from ~/.Xauthority and register it under the
+/// *actual* system hostname (both unix and TCP forms), then run `xhost +`.
+private func disableX11AccessControl() {
+    let xauthBin = "/opt/X11/bin/xauth"
+    let xhostBin = "/opt/X11/bin/xhost"
+
+    // Ensure both xauth and xhost exist
+    guard FileManager.default.isExecutableFile(atPath: xauthBin),
+          FileManager.default.isExecutableFile(atPath: xhostBin) else { return }
+
+    // Add xauth entries for the current system hostname so xhost can
+    // authenticate.  `hostname` may return a FQDN that differs from the
+    // entries XQuartz originally wrote (e.g. ".fritz.box" vs ".local").
+    let hostname = shellOutput("/bin/hostname")
+    if !hostname.isEmpty {
+        // Get the first cookie from ~/.Xauthority
+        let cookie = shellOutput("\(xauthBin) list 2>/dev/null | head -1 | awk '{print $NF}'")
+        if !cookie.isEmpty {
+            _ = shell("\(xauthBin) add \(hostname)/unix:0 MIT-MAGIC-COOKIE-1 \(cookie) 2>/dev/null", quiet: true)
+            _ = shell("\(xauthBin) add \(hostname):0 MIT-MAGIC-COOKIE-1 \(cookie) 2>/dev/null", quiet: true)
+        }
+    }
+
+    // Now xhost + should succeed
+    _ = shell("\(xhostBin) + >/dev/null 2>&1", quiet: true)
+}
+
 private func ensureXQuartz() {
     // Skip in CI — no display server available
     if ProcessInfo.processInfo.environment["CI"] != nil { return }
@@ -828,10 +868,11 @@ private func ensureXQuartz() {
     }
     print("  Starting XQuartz...")
     shell("open -a XQuartz 2>/dev/null", quiet: true)
-    // Wait for the X server to come up (xhost will fail until it's ready)
-    let xhost = "/opt/X11/bin/xhost"
+    // Wait for the X server to come up, then disable access control
     for _ in 0..<30 {
-        if shell("\(xhost) + >/dev/null 2>&1", quiet: true) == 0 {
+        let x11Socket = "/tmp/.X11-unix/X0"
+        if FileManager.default.fileExists(atPath: x11Socket) {
+            disableX11AccessControl()
             ensureDisplayBridge()
             print("  -> XQuartz ready (xhost +, TCP bridge on port 6000)")
             return
