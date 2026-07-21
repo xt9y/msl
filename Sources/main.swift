@@ -560,7 +560,10 @@ func main() {
     case "upgrade":
         let brew = Process()
         brew.executableURL = URL(fileURLWithPath: "/bin/bash")
-        brew.arguments = ["-c", "brew update && yes | brew upgrade msl msld"]
+        brew.arguments = ["-c", "brew update && brew upgrade msl msld"]
+        var env = ProcessInfo.processInfo.environment
+        env["HOMEBREW_NO_INTERACTIVE"] = "1"
+        brew.environment = env
         brew.standardOutput = FileHandle.standardOutput
         brew.standardError = FileHandle.standardError
         do {
