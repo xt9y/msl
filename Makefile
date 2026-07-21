@@ -18,14 +18,18 @@ SWIFT_SRCS = \
 OBJC_SRCS = Sources/MSLVSOCK.m
 OBJC_HEADER = Sources/BridgingHeader.h
 
-all: $(PRODUCT) $(GUEST) sign
+all: $(VERSION_FILE) $(PRODUCT) $(GUEST) sign
 
 $(VERSION_FILE):
 	@echo 'import Foundation' > $(VERSION_FILE)
-	@GIT_VERSION=$$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0-dev"); \
+	@GIT_VERSION=$$(git describe --tags --abbrev=0 2>/dev/null) && \
+	 GIT_VERSION=$$(echo "$$GIT_VERSION" | sed 's/^v//') || \
+	 GIT_VERSION="0.0.0-dev"; \
 	 echo "let MSLVersion = \"$$GIT_VERSION\"" >> $(VERSION_FILE)
+	@echo "  -> Version: $$(grep MSLVersion $(VERSION_FILE) | sed 's/.*"\(.*\)"/\1/')"
 
-$(PRODUCT): $(VERSION_FILE) $(SWIFT_SRCS) $(OBJC_SRCS)
+$(PRODUCT): $(SWIFT_SRCS) $(OBJC_SRCS)
+	@test -s $(VERSION_FILE) 2>/dev/null || $(MAKE) $(VERSION_FILE)
 	@mkdir -p $(BUILD_DIR)
 	$(SWIFTC) $(SWIFT_FLAGS) \
 		-import-objc-header $(OBJC_HEADER) \
