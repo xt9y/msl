@@ -320,7 +320,7 @@ jobs:
           fi
 
           echo "Checking installed packages..."
-          for pkg in iptables-nft ncurses archlinuxarm-keyring; do
+          for pkg in iptables-nft ncurses archlinuxarm-keyring mesa vulkan-swrast vulkan-icd-loader vulkan-tools mesa-utils; do
             pkg_info=$(./build/msl exec "pacman -Qi $pkg 2>&1 | head -1" 2>&1)
             echo "$pkg: $pkg_info"
             if echo "$pkg_info" | grep -qi "Name"; then

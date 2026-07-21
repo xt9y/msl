@@ -94,6 +94,26 @@ static int verify_token(int client_fd) {
     return constant_time_cmp(g_token, recv_token, TOKEN_SIZE) == 0;
 }
 
+static void load_environment(void) {
+    FILE *fp = fopen("/etc/environment", "r");
+    if (!fp) return;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\0') continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+        size_t vlen = strlen(val);
+        while (vlen > 0 && (val[vlen-1] == '\n' || val[vlen-1] == '\r' || val[vlen-1] == ' ')) val[--vlen] = '\0';
+        if (*key) setenv(key, val, 1);
+    }
+    fclose(fp);
+}
+
 static void probe_gateway(void) {
     if (g_display[0]) return;
     FILE *fp = fopen("/proc/net/route", "r");
@@ -474,6 +494,7 @@ int main(void) {
 
     load_token();
     probe_gateway();
+    load_environment();
 
     int fd = -1;
     struct sockaddr_vm addr;
