@@ -40,16 +40,14 @@ Configuration is stored in `~/.msl/config.json`.
 ## Usage
 
 ```bash
+msl help         # show usage
 msl start        # boot the VM (daemon runs in background)
-msl shell        # interactive shell (like SSH)
-msl exec "cmd"   # run a command and print output
 msl stop         # graceful ACPI shutdown
 msl status       # check if the VM is running
+msl shell        # interactive shell (like SSH)
+msl exec "cmd"   # run a command and print output
 msl update       # download latest kernel/modules/Arch image
-msl upgrade      # update msl/msld binaries via Homebrew
 msl fix          # re-sign entitlements (fixes "permission denied")
-msl check-virt   # verify Virtualization.framework support
-msl help         # show usage
 ```
 
 

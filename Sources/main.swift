@@ -184,18 +184,16 @@ func printHelp() {
     print("Usage: msl <command> [options]")
     print()
     print("Commands:")
-    print("  start              Start the VM")
-    print("  stop               Stop the VM")
-    print("  status             Show VM status")
-    print("  shell              Open an interactive shell")
-    print("  exec <command>     Run a command in the VM")
-    print("  setup              Download and prepare the VM disk image")
-    print("  update             Re-download rootfs and rebuild disk image")
-    print("  fix                Re-sign binary (restore virtualization entitlement)")
-    print("  upgrade            Update msl and msld (runs brew update && brew upgrade)")
-    print("  uninstall          Remove all msl data")
-    print("  version            Show version")
-    print("  help               Show this help")
+    print("  help               show usage")
+    print("  start              boot the VM (daemon runs in background)")
+    print("  stop               graceful ACPI shutdown")
+    print("  status             check if the VM is running")
+    print("  shell              interactive shell (like SSH)")
+    print("  exec <cmd>         run a command and print output")
+    print("  update             download latest kernel/modules/Arch image")
+    print("  fix                re-sign entitlements (fixes permission issues)")
+    print("  uninstall          remove all msl data")
+    print("  version            show version")
     print()
     print("Setup options:")
     print("  --disk-size N    Disk image size in GB (default: 8)")
@@ -340,7 +338,7 @@ func checkForUpdate() {
           let curParts = parseVersion(MSLVersion),
           let tagParts = parseVersion(String(tag.dropFirst())) else { return }
     if compareVersions(tagParts, curParts) == .orderedDescending {
-        fputs("msl: new version \(tag) available — run 'msl upgrade'\n", stderr)
+        fputs("msl: new version \(tag) available — run 'brew update && brew upgrade msl msld'\n", stderr)
     }
 }
 
@@ -556,24 +554,6 @@ func main() {
             fputs("msl: virtualization entitlement still missing — try 'brew reinstall msl'\n", stderr)
             exit(1)
         }
-
-    case "upgrade":
-        let brew = Process()
-        brew.executableURL = URL(fileURLWithPath: "/bin/bash")
-        brew.arguments = ["-c", "brew update && brew upgrade msl msld"]
-        var env = ProcessInfo.processInfo.environment
-        env["HOMEBREW_NO_INTERACTIVE"] = "1"
-        brew.environment = env
-        brew.standardOutput = FileHandle.standardOutput
-        brew.standardError = FileHandle.standardError
-        do {
-            try brew.run()
-            brew.waitUntilExit()
-        } catch {
-            fputs("msl: upgrade failed: \(error.localizedDescription)\n", stderr)
-            exit(1)
-        }
-        exit(brew.terminationStatus)
 
     case "check-virt":
         if VZVirtualMachine.isSupported {
