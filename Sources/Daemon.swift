@@ -53,8 +53,22 @@ class Daemon {
         sigSourceInt?.cancel()
         stopShellListener()
         killSocat()
-        shouldKeepRunning = false
-        CFRunLoopStop(CFRunLoopGetMain())
+        // Attempt clean VM shutdown with 5s timeout so the guest
+        // gets a clean ACPI power-off even during early boot.
+        Task.detached {
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { try await self.vm.stop() }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 5_000_000_000)
+                    }
+                    _ = try await group.next()
+                    group.cancelAll()
+                }
+            } catch { }
+            self.shouldKeepRunning = false
+            CFRunLoopStop(CFRunLoopGetMain())
+        }
     }
 
     func run() async throws {
@@ -398,7 +412,22 @@ class Daemon {
 
     private func handleStop(send: @escaping (Data) -> Void) {
         sendDone(send)
-        shouldKeepRunning = false
+        // Attempt clean VM shutdown (10s timeout) so the guest filesystem
+        // is in a consistent state. The main loop polls every 100ms, so
+        // shouldKeepRunning=false below stops the daemon promptly.
+        Task.detached {
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask { try await self.vm.stop() }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 10_000_000_000)
+                    }
+                    _ = try await group.next()
+                    group.cancelAll()
+                }
+            } catch { }
+            self.shouldKeepRunning = false
+        }
     }
 
     private func handleStatus(send: @escaping (Data) -> Void) {

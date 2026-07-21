@@ -292,7 +292,13 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     try FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
-    if fileExists(kernelPath) && isValidExt4(diskPath) { return }
+    if fileExists(kernelPath) && isValidExt4(diskPath) {
+        // Warn if the user passed flags that would be silently ignored.
+        if diskSizeGB != 8 || ramSizeGB != 2 || cpuCores != 2 {
+            print("note: msl is already configured — flags ignored (re-run with --force to re-create)")
+        }
+        return
+    }
 
     print("msl setup\n")
 
@@ -513,10 +519,8 @@ WantedBy=multi-user.target
     fflush(stdout)
 
     func sha256ForDeb(url: String) -> String? {
-        if let data = try? Data(contentsOf: URL(string: "\(url).sha256")!),
-           let str = String(data: data, encoding: .utf8) {
-            return str.split(separator: " ").first.map(String.init)
-        }
+        // Ubuntu only publishes directory-level SHA256SUMS, not per-file .sha256.
+        // Try the real path first to avoid a guaranteed 404 on every kernel download.
         let base = url.dropLast(url.split(separator: "/").last?.count ?? 0)
         if let data = try? Data(contentsOf: URL(string: "\(base)SHA256SUMS")!),
            let str = String(data: data, encoding: .utf8) {
@@ -526,6 +530,11 @@ WantedBy=multi-user.target
                     return line.split(separator: " ").first.map(String.init)
                 }
             }
+        }
+        // Fallback: some mirrors may serve per-file .sha256 companions.
+        if let data = try? Data(contentsOf: URL(string: "\(url).sha256")!),
+           let str = String(data: data, encoding: .utf8) {
+            return str.split(separator: " ").first.map(String.init)
         }
         return nil
     }
