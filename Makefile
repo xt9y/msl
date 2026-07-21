@@ -28,14 +28,14 @@ all: $(VERSION_FILE) $(PRODUCT) $(GUEST) sign
 # the archive survives unchanged — the Homebrew formula also writes
 # the correct version before invoking make sign.
 $(VERSION_FILE):
-	@echo 'import Foundation' > $(VERSION_FILE)
 	@if test -d .git; then \
+	  echo 'import Foundation' > $(VERSION_FILE); \
 	  GIT_VERSION=$$(git describe --tags --dirty --always 2>/dev/null | sed 's/^v//'); \
+	  echo "let MSLVersion = \"$$GIT_VERSION\"" >> $(VERSION_FILE); \
+	  echo "  -> Version: $$(grep MSLVersion $(VERSION_FILE) | sed 's/.*"\(.*\)"/\1/')"; \
 	else \
-	  GIT_VERSION="0.0.0-dev"; \
-	fi; \
-	echo "let MSLVersion = \"$$GIT_VERSION\"" >> $(VERSION_FILE)
-	@echo "  -> Version: $$(grep MSLVersion $(VERSION_FILE) | sed 's/.*"\(.*\)"/\1/')"
+	  echo "  -> Version: $$(grep MSLVersion $(VERSION_FILE) 2>/dev/null | sed 's/.*"\(.*\)"/\1/' || echo '(no .git — using shipped version)')"; \
+	fi
 
 $(PRODUCT): $(SWIFT_SRCS) $(OBJC_SRCS)
 	@mkdir -p $(BUILD_DIR)
