@@ -486,14 +486,22 @@ func main() {
         // Read the canonical entitlements file bundled with the binary
         // instead of duplicating the plist content inline.
         let plist: String
-        let bundled = URL(fileURLWithPath: CommandLine.arguments[0])
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Resources/msl.entitlements")
-        if let data = try? Data(contentsOf: bundled),
-           let str = String(data: data, encoding: .utf8) {
-            plist = str
-        } else if let data = try? Data(contentsOf: URL(fileURLWithPath: "/usr/local/share/msl/msl.entitlements")),
-                  let str = String(data: data, encoding: .utf8) {
+        let candidates = [
+            URL(fileURLWithPath: CommandLine.arguments[0])
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Resources/msl.entitlements"),
+            URL(fileURLWithPath: "/opt/homebrew/share/msl/msl.entitlements"),
+            URL(fileURLWithPath: "/usr/local/share/msl/msl.entitlements"),
+        ]
+        var found: String?
+        for c in candidates {
+            if let data = try? Data(contentsOf: c),
+               let str = String(data: data, encoding: .utf8) {
+                found = str
+                break
+            }
+        }
+        if let str = found {
             plist = str
         } else {
             fputs("msl: cannot find msl.entitlements — reinstall with 'brew reinstall msl'\n", stderr)
