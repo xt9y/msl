@@ -386,6 +386,13 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
     let bashProfile = "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
     try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
+    // Force Mesa software rendering (llvmpipe/lavapipe) system-wide.
+    // LP_NUM_THREADS matches the guest CPU count for best performance.
+    let environment = "LIBGL_ALWAYS_SOFTWARE=1\n__GLX_VENDOR_LIBRARY_NAME=mesa\nVK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nLP_NUM_THREADS=\(cpuCores)\n"
+    try environment.write(toFile: "\(tmpdir)/etc/environment", atomically: true, encoding: .utf8)
+    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/profile.d", withIntermediateDirectories: true)
+    let mesaProfile = "export LIBGL_ALWAYS_SOFTWARE=1\nexport __GLX_VENDOR_LIBRARY_NAME=mesa\nexport VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nexport LP_NUM_THREADS=\(cpuCores)\n"
+    try mesaProfile.write(toFile: "\(tmpdir)/etc/profile.d/msl-mesa.sh", atomically: true, encoding: .utf8)
 
     // Guest firewall: drop all inbound on eth0 except established/related.
     // This is defense-in-depth; Virtualization.framework NAT already blocks
@@ -505,7 +512,7 @@ WantedBy=multi-user.target
 
     [Service]
     Type=oneshot
-    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft && pacman -Syy && systemctl enable --now msl-firewall && touch /var/lib/msl-pacman-key.done'
+    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft mesa vulkan-swrast vulkan-icd-loader vulkan-tools mesa-utils && pacman -Syy && modprobe nf_tables 2>/dev/null; modprobe nf_conntrack 2>/dev/null; modprobe xt_conntrack 2>/dev/null; systemctl enable --now msl-firewall || true; touch /var/lib/msl-pacman-key.done'
     RemainAfterExit=yes
 
     [Install]
@@ -938,7 +945,7 @@ func discoverKernelVersions() -> [(String, String)] {
 /// Shared pacman keyring initialization command used both during rootfs setup
 /// and as a fallback in the daemon's ensurePacmanKeyring(). All operations
 /// are chained with && so failure at any step stops execution.
-let pacmanKeySetupCommand = "rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft && pacman -Syy && systemctl enable --now msl-firewall && touch /var/lib/msl-pacman-key.done"
+let pacmanKeySetupCommand = "rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft mesa vulkan-swrast vulkan-icd-loader vulkan-tools mesa-utils && pacman -Syy && modprobe nf_tables 2>/dev/null; modprobe nf_conntrack 2>/dev/null; modprobe xt_conntrack 2>/dev/null; systemctl enable --now msl-firewall || true; touch /var/lib/msl-pacman-key.done"
 
 struct MslError: Error, LocalizedError {
     let message: String
