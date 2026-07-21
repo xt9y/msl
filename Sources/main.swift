@@ -501,11 +501,41 @@ func main() {
             fputs("msl: cannot find msl.entitlements — reinstall with 'brew reinstall msl'\n", stderr)
             exit(1)
         }
+        // Detect the current signing identity so we preserve it rather
+        // than unconditionally replacing a Developer ID signature with
+        // ad-hoc (which would break Gatekeeper / notarization status).
+        let currentIdentity: String
+        let diag = Process()
+        diag.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        diag.arguments = ["-d", "-v", exe]
+        let diagOut = Pipe()
+        diag.standardOutput = diagOut
+        diag.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        if (try? diag.run()) != nil {
+            diag.waitUntilExit()
+            if diag.terminationStatus == 0 {
+                let data = diagOut.fileHandleForReading.readDataToEndOfFile()
+                let out = String(data: data, encoding: .utf8) ?? ""
+                // Lines starting with "Authority=" carry the identity name
+                // we need to pass back to codesign -s.  Ad-hoc binaries
+                // print "Signature=adhoc" with no Authority line.
+                if let authLine = out.split(separator: "\n").first(where: { $0.hasPrefix("Authority=") }) {
+                    currentIdentity = String(authLine.dropFirst("Authority=".count))
+                } else {
+                    currentIdentity = "-"
+                }
+            } else {
+                currentIdentity = "-"
+            }
+        } else {
+            currentIdentity = "-"
+        }
+
         let tmp = "/tmp/msl-entitlements.plist"
         try? plist.write(toFile: tmp, atomically: true, encoding: .utf8)
         let cs = Process()
         cs.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        cs.arguments = ["--entitlements", tmp, "--force", "--sign", "-", exe]
+        cs.arguments = ["--entitlements", tmp, "--force", "--sign", currentIdentity, exe]
         cs.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
         cs.standardError = FileHandle(forWritingAtPath: "/dev/null")
         do {

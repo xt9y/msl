@@ -953,8 +953,10 @@ func readMslToken() -> Data? {
     return try? Data(contentsOf: URL(fileURLWithPath: tokenPath))
 }
 
-/// Write the auth token to a VSOCK file descriptor. Called before sending
-/// the mode byte on every VSOCK connection.
+/// Write the auth token to a VSOCK file descriptor and wait for a
+/// single-byte ACK/NAK from the guest.  Returns true if the token was
+/// accepted.  A NAK (0xFF) or timeout is logged but non-fatal so that
+/// the caller can proceed (the guest will reject the command anyway).
 func writeMslToken(_ fd: Int32) -> Bool {
     guard let token = readMslToken() else {
         mslLog("warning: VSOCK auth token not found at \(setupDataDir())/token — connections will not be authenticated")
@@ -965,6 +967,21 @@ func writeMslToken(_ fd: Int32) -> Bool {
         let n = remaining.withUnsafeBytes { write(fd, $0.baseAddress, remaining.count) }
         if n <= 0 { return false }
         remaining = remaining.dropFirst(n)
+    }
+
+    // Wait a short while for the guest's ACK/NAK so we can detect
+    // token staleness (disk image persisted across token rotation).
+    var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    var pr: Int32
+    repeat { pr = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, 2000) } }
+    while pr < 0 && errno == EINTR
+    if pr > 0 {
+        var resp: UInt8 = 0
+        if read(fd, &resp, 1) == 1 && resp == 0xFF {
+            mslLog("warning: guest rejected auth token — token may be stale")
+            mslLog("         re-run 'msl setup --force' to regenerate both host and guest tokens")
+            return false
+        }
     }
     return true
 }

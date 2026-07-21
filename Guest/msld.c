@@ -174,8 +174,20 @@ static ssize_t safe_write(int fd, const void *buf, size_t len) {
 static void serve_client(int client_fd) {
     /* Auth: verify token before doing anything else. */
     if (!verify_token(client_fd)) {
+        fprintf(stderr, "msld: token mismatch — rejecting connection\n");
+        /* Send a non-zero byte so the host can distinguish "token
+         * rejected" from a generic connection failure.  The host
+         * polls after writeMslToken and expects a single byte;
+         * anything other than 0x00 means rejection. */
+        uint8_t nak = 0xFF;
+        write(client_fd, &nak, 1);
         return;
     }
+    /* Send ACK so the host knows the token was accepted before it
+     * sends the mode byte / command.  Old hosts that don't poll for
+     * this byte will just time out briefly and proceed. */
+    uint8_t ack = 0x00;
+    write(client_fd, &ack, 1);
 
     struct timeval tv = {5, 0};
     fd_set rfds;

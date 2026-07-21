@@ -1,6 +1,5 @@
 build/
 Sources/Version.swift
-.release.sh
 
 # macOS
 .DS_Store
