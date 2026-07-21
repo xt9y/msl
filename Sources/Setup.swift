@@ -920,7 +920,7 @@ private func findMsldBinary() -> String? {
         let p = (which as NSString).standardizingPath
         var st = stat()
         if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
-            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", p]) }
+            if (st.st_mode & S_IXUSR) == 0 { _ = try? procOrThrow("/bin/chmod", ["+x", p]) }
             return p
         }
     }
@@ -929,7 +929,7 @@ private func findMsldBinary() -> String? {
     for p in knownPaths {
         var st = stat()
         if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
-            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", p]) }
+            if (st.st_mode & S_IXUSR) == 0 { _ = try? procOrThrow("/bin/chmod", ["+x", p]) }
             return p
         }
     }
@@ -944,7 +944,7 @@ private func findMsldBinary() -> String? {
         let expanded = (c as NSString).standardizingPath
         var st = stat()
         if stat(expanded, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG {
-            if (st.st_mode & S_IXUSR) == 0 { try? procOrThrow("/bin/chmod", ["+x", expanded]) }
+            if (st.st_mode & S_IXUSR) == 0 { _ = try? procOrThrow("/bin/chmod", ["+x", expanded]) }
             return expanded
         }
     }
