@@ -14,14 +14,7 @@ brew install msl
 ## Requirements
 
 - **macOS 14+** (Sonoma) with Apple Silicon (M1/M2/M3/M4)
-- **Passwordless sudo** — `msl` runs the VM under Virtualization.framework,
-  which requires the com.apple.vm.networking entitlement; the daemon elevates
-  itself on first launch.  Run `sudo visudo` and add:
-  ```
-  youruser ALL=(ALL) NOPASSWD: /usr/local/bin/msld
-  ```
-  The path must match `which msld` (try `/opt/homebrew/bin/msld` on Apple
-  Silicon Homebrew).
+- [Zig](https://ziglang.org/download/) (`brew install zig`) for building from source
 
 
 ## Setup

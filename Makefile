@@ -45,4 +45,13 @@ sign: $(PRODUCT)
 	codesign --entitlements Resources/msl.entitlements \
 		--force --sign "$(DEV_ID)" "$(PRODUCT)"
 
-.PHONY: all clean sign $(VERSION_FILE)
+test: $(PRODUCT) $(GUEST)
+	zig cc -target aarch64-linux-musl -static -Os -s \
+		-Wall -Wextra -Werror -o /dev/null $(GUEST_SRC)
+	./build/msl version
+	./build/msl help | grep -q start
+	./build/msl help | grep -q shell
+	./build/msl help | grep -q exec
+	@echo "All smoke tests passed"
+
+.PHONY: all clean sign test $(VERSION_FILE)

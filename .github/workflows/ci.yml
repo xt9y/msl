@@ -9,6 +9,7 @@ name: "Build & Integration Test"
 on:
   push:
     branches: [main]
+    tags: [v*]
   pull_request:
     branches: [main]
 
@@ -39,18 +40,19 @@ jobs:
           rm -f /tmp/zig.tar.xz
           /tmp/zig-macos-aarch64-0.14.0/zig version
 
-      - name: Build guest daemon
+      - name: Build guest daemon (strict)
         run: |
           mkdir -p build
           /tmp/zig-macos-aarch64-0.14.0/zig cc \
-            -target aarch64-linux-musl -static -Os -s -o build/msld Guest/msld.c
+            -target aarch64-linux-musl -static -Os -s \
+            -Wall -Wextra -Werror -o build/msld Guest/msld.c
           file build/msld
 
       - name: Build host binary
         run: make
 
-      - name: Verify binary runs
-        run: ./build/msl version
+      - name: CLI smoke tests
+        run: make test
 
       - name: Validate Arch Linux ARM GPG signing key fingerprint
         run: |
@@ -152,6 +154,21 @@ jobs:
           ./build/msl start
         timeout-minutes: 5
 
+      - name: "Wait for guest to be ready"
+        if: env.VIRT == 'yes'
+        run: |
+          for i in $(seq 1 120); do
+            out=$(./build/msl exec "echo ready" 2>/dev/null)
+            if [ "$out" = "ready" ]; then
+              echo "guest ready after ${i}s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "guest did not become ready in time"
+          exit 1
+        timeout-minutes: 5
+
       - name: "Test exec: basic command"
         if: env.VIRT == 'yes'
         run: |
@@ -217,26 +234,49 @@ jobs:
           done
           echo "PASS: concurrent exec"
 
-      - name: "Stop VM"
+      - name: "Stop VM gracefully"
         if: env.VIRT == 'yes'
         run: |
           ./build/msl stop
-          sleep 2
+          for i in $(seq 1 30); do
+            status=$(./build/msl status 2>&1)
+            if echo "$status" | grep -qi "stopped"; then
+              echo "VM stopped after ${i}s"
+              break
+            fi
+            sleep 2
+          done
           status=$(./build/msl status 2>&1)
-          echo "$status"
           echo "$status" | grep -qi "stopped" || { echo "FAIL: expected stopped"; exit 1; }
           echo "PASS: stop"
 
-      - name: "Restart and verify clean state"
+      - name: "Second boot — start"
         if: env.VIRT == 'yes'
         run: |
+          echo "--- Second boot ---"
           ./build/msl start
-          sleep 5
-          result=$(./build/msl exec "echo after_restart" 2>&1)
-          echo "$result"
-          echo "$result" | grep -q after_restart || { echo "FAIL: restart"; exit 1; }
-          ./build/msl stop
-          echo "PASS: restart"
+        timeout-minutes: 5
+
+      - name: "Second boot — verify"
+        if: env.VIRT == 'yes'
+        run: |
+          for i in $(seq 1 120); do
+            out=$(./build/msl exec "echo second_boot_ok" 2>/dev/null)
+            if [ "$out" = "second_boot_ok" ]; then
+              echo "second boot verified after ${i}s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "second boot did not become ready"
+          exit 1
+        timeout-minutes: 5
+
+      - name: "Second boot — exec smoke"
+        if: env.VIRT == 'yes'
+        run: |
+          ./build/msl exec "uname -a"
+          ./build/msl exec "cat /proc/1/comm" | grep -q systemd || { echo "FAIL"; exit 1; }
 
       - name: "Test pacman-keyring init marker"
         if: env.VIRT == 'yes'
@@ -290,3 +330,8 @@ jobs:
               exit 1
             fi
           done
+
+      - name: "Final stop"
+        if: env.VIRT == 'yes'
+        run: ./build/msl stop
+        timeout-minutes: 2
