@@ -295,12 +295,12 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     if fileExists(kernelPath) && isValidExt4(diskPath) {
         // Warn if the user passed flags that would be silently ignored.
         if diskSizeGB != 8 || ramSizeGB != 2 || cpuCores != 2 {
-            print("note: msl is already configured — flags ignored (re-run with --force to re-create)")
+            print("MSL: Already configured — flags ignored (re-run with --force to re-create)")
         }
         return
     }
 
-    print("msl setup\n")
+    print("MSL setup\n")
 
     try checkDiskSpace(requiredGB: diskSizeGB + 2, at: dataDir)
     try checkDiskSpace(requiredGB: diskSizeGB + 2, at: NSTemporaryDirectory())
@@ -438,9 +438,9 @@ WantedBy=multi-user.target
         try procOrThrow("/bin/mkdir", ["-p", "\(tmpdir)/usr/local/bin"])
         try procOrThrow("/bin/cp", ["-L", msld, "\(tmpdir)/usr/local/bin/msld"])
         try procOrThrow("/bin/chmod", ["+x", "\(tmpdir)/usr/local/bin/msld"])
-        print("  msld daemon embedded.")
+        print("  Msld daemon embedded.")
     } else {
-        fputs("  warning: msld not found — run 'brew install msld' first\n", stderr)
+        fputs("  Warning: msld not found — run 'brew install msld' first\n", stderr)
     }
 
     // Script to load VSOCK modules before starting msld.
@@ -702,7 +702,7 @@ WantedBy=multi-user.target
 }
 
 func runUpdate(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) throws {
-    print("msl update\n")
+    print("MSL update\n")
     let dataDir = setupDataDir()
     guard isSetupComplete() else {
         print("  No existing setup found — running full setup instead.")
@@ -953,8 +953,8 @@ private func findMsldBinary() -> String? {
 
 private func ensureMsldBinary() -> String? {
     if let p = findMsldBinary() { return p }
-    print("  error: msld not found — install with: brew install msld")
-    print("           then run: msl setup again")
+    print("  Error: msld not found — install with: brew install msld")
+    print("           Then run: msl setup again")
     return nil
 }
 

@@ -57,20 +57,20 @@ func sendWinsize(sock: Int32) {
 func runShell() {
     let state = DaemonState(dataDir: dataDir)
     guard state.isRunning() else {
-        fputs("msl: daemon not running — start with 'msl start'\n", stderr)
+        fputs("MSL: Daemon not running — start with 'msl start'\n", stderr)
         exit(1)
     }
 
     signal(SIGPIPE, SIG_IGN)
     let sock = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard sock >= 0 else { fputs("msl: socket error\n", stderr); exit(1) }
+    guard sock >= 0 else { fputs("MSL: Socket error\n", stderr); exit(1) }
     defer { close(sock) }
 
     var addr = sockaddr_un()
     let sunPath = "\(dataDir)/msld.shell.sock"
     let pathMax = MemoryLayout.size(ofValue: addr.sun_path)
     guard sunPath.utf8.count < pathMax else {
-        fputs("msl: shell socket path too long\n", stderr); exit(1)
+        fputs("MSL: Shell socket path too long\n", stderr); exit(1)
     }
     addr.sun_family = sa_family_t(AF_UNIX)
     _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { strncpy($0, sunPath, pathMax - 1) }
@@ -79,7 +79,7 @@ func runShell() {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, socklen_t(addrSize)) }
     }
     if rc != 0 {
-        fputs("msl: shell not ready yet — VM may still be booting\n", stderr)
+        fputs("MSL: Shell not ready yet — VM may still be booting\n", stderr)
         exit(1)
     }
 
@@ -95,7 +95,7 @@ func runShell() {
             if n == 1 && ok == 1 { okReceived = true; break }
         }
     }
-    guard okReceived else { fputs("msl: shell handshake failed\n", stderr); exit(1) }
+    guard okReceived else { fputs("MSL: Shell handshake failed\n", stderr); exit(1) }
 
     let isTTY = isatty(STDIN_FILENO) == 1
     if isTTY {
@@ -237,7 +237,7 @@ func startDaemonInBackground() {
     do {
         try task.run()
     } catch {
-        fputs("msl: failed to start daemon: \(error.localizedDescription)\n", stderr)
+        fputs("MSL: Failed to start daemon: \(error.localizedDescription)\n", stderr)
         exit(1)
     }
 
@@ -249,7 +249,7 @@ func startDaemonInBackground() {
         usleep(100_000)
     }
     guard let pid = state.readPID(), pid == childPID else {
-        fputs("msl: daemon failed to start — check /tmp/msl-daemon.log\n", stderr)
+        fputs("MSL: Daemon failed to start — check /tmp/msl-daemon.log\n", stderr)
         exit(1)
     }
 
@@ -264,8 +264,8 @@ func startDaemonInBackground() {
         }
         usleep(100_000)
     }
-    if vmReady { print("msl \(MSLVersion) started (pid \(pid))") }
-    else { fputs("msl: VM booting in background (pid \(pid)) — use 'msl shell' to connect\n", stderr) }
+    if vmReady { print("MSL \(MSLVersion) started (pid \(pid))") }
+    else { fputs("MSL: VM booting in background (pid \(pid)) — use 'msl shell' to connect\n", stderr) }
 }
 
 func parseVersion(_ s: String) -> [Int]? {
@@ -338,7 +338,7 @@ func checkForUpdate() {
           let curParts = parseVersion(MSLVersion),
           let tagParts = parseVersion(String(tag.dropFirst())) else { return }
     if compareVersions(tagParts, curParts) == .orderedDescending {
-        fputs("msl: new version \(tag) available — run 'brew update && brew upgrade msl msld'\n", stderr)
+        fputs("MSL: New version \(tag) available — run 'brew update && brew upgrade msl msld'\n", stderr)
     }
 }
 
@@ -346,7 +346,7 @@ func main() {
     let args = CommandLine.arguments
 
     if args.count == 1 {
-        print("msl — macOS Subsystem for Linux")
+        print("MSL — macOS Subsystem for Linux")
         print("Run 'msl help' for usage.")
         exit(0)
     }
@@ -357,7 +357,7 @@ func main() {
         printHelp()
 
     case "version":
-        print("msl \(MSLVersion)")
+        print("MSL \(MSLVersion)")
 
     case "setup":
         let (ds, rs, cc) = parseSetupFlags(args)
@@ -390,7 +390,7 @@ func main() {
         }
         let state = DaemonState(dataDir: dataDir)
         if state.isRunning() {
-            print("msl is already running (pid \(state.readPID() ?? 0))")
+            print("MSL: Already running (pid \(state.readPID() ?? 0))")
             exit(0)
         }
         startDaemonInBackground()
@@ -444,7 +444,7 @@ func main() {
             }
             exit(Int32(exitCode))
         } catch {
-            fputs("msl: \(error.localizedDescription)\n", stderr)
+            fputs("MSL: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
@@ -458,7 +458,7 @@ func main() {
             let reqData = try JSONSerialization.data(withJSONObject: req)
             _ = try client.send(request: reqData)
         } catch {
-            fputs("msl: \(error.localizedDescription)\n", stderr)
+            fputs("MSL: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
@@ -477,7 +477,7 @@ func main() {
             print("Removed \(d)")
             print("Run 'brew uninstall msl msld' to remove the binaries.")
         } catch {
-            fputs("msl: \(error.localizedDescription)\n", stderr)
+            fputs("MSL: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
 
@@ -504,7 +504,7 @@ func main() {
         if let str = found {
             plist = str
         } else {
-            fputs("msl: cannot find msl.entitlements — reinstall with 'brew reinstall msl'\n", stderr)
+            fputs("MSL: Cannot find msl.entitlements — reinstall with 'brew reinstall msl'\n", stderr)
             exit(1)
         }
         // Detect the current signing identity so we preserve it rather
@@ -548,18 +548,18 @@ func main() {
             try cs.run()
             cs.waitUntilExit()
         } catch {
-            fputs("msl: codesign failed: \(error.localizedDescription)\n", stderr)
+            fputs("MSL: Codesign failed: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
         try? FileManager.default.removeItem(atPath: tmp)
         guard cs.terminationStatus == 0 else {
-            fputs("msl: codesign failed (exit \(cs.terminationStatus))\n", stderr)
+            fputs("MSL: Codesign failed (exit \(cs.terminationStatus))\n", stderr)
             exit(1)
         }
         if VZVirtualMachine.isSupported {
-            print("msl: virtualization entitlement restored — restart daemon with 'msl start'")
+            print("MSL: Virtualization entitlement restored — restart daemon with 'msl start'")
         } else {
-            fputs("msl: virtualization entitlement still missing — try 'brew reinstall msl'\n", stderr)
+            fputs("MSL: Virtualization entitlement still missing — try 'brew reinstall msl'\n", stderr)
             exit(1)
         }
 
@@ -573,7 +573,7 @@ func main() {
         }
 
     default:
-        fputs("msl: unknown command '\(args[1])'\n", stderr)
+        fputs("MSL: Unknown command '\(args[1])'\n", stderr)
         fputs("Run 'msl help' for usage.\n", stderr)
         exit(1)
     }
