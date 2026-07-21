@@ -26,13 +26,32 @@ func sendWinsize(sock: Int32) {
     var marker: UInt8 = 0x02
     var rowsBE = rows.bigEndian
     var colsBE = cols.bigEndian
-    var n: Int
-    repeat { n = withUnsafePointer(to: &marker) { write(sock, $0, 1) } }
-    while n < 0 && errno == EINTR
-    repeat { n = withUnsafeBytes(of: &rowsBE) { write(sock, $0.baseAddress!, 2) } }
-    while n < 0 && errno == EINTR
-    repeat { n = withUnsafeBytes(of: &colsBE) { write(sock, $0.baseAddress!, 2) } }
-    while n < 0 && errno == EINTR
+    // Each write() on a stream socket may send fewer bytes than
+    // requested even without an error; loop until all bytes are sent.
+    withUnsafePointer(to: &marker) { ptr in
+        var remaining = 1
+        while remaining > 0 {
+            let n = write(sock, ptr.advanced(by: 1 - remaining), remaining)
+            if n < 0 { if errno == EINTR { continue } else { break } }
+            remaining -= n
+        }
+    }
+    withUnsafeBytes(of: &rowsBE) { ptr in
+        var remaining = 2
+        while remaining > 0 {
+            let n = write(sock, ptr.baseAddress!.advanced(by: 2 - remaining), remaining)
+            if n < 0 { if errno == EINTR { continue } else { break } }
+            remaining -= n
+        }
+    }
+    withUnsafeBytes(of: &colsBE) { ptr in
+        var remaining = 2
+        while remaining > 0 {
+            let n = write(sock, ptr.baseAddress!.advanced(by: 2 - remaining), remaining)
+            if n < 0 { if errno == EINTR { continue } else { break } }
+            remaining -= n
+        }
+    }
 }
 
 func runShell() {
@@ -247,8 +266,10 @@ func startDaemonInBackground() {
     else { fputs("msl: VM booting in background (pid \(pid)) — use 'msl shell' to connect\n", stderr) }
 }
 
-func parseVersion(_ s: String) -> [Int] {
-    return s.split(separator: ".").compactMap { Int($0) }
+func parseVersion(_ s: String) -> [Int]? {
+    let parts = s.split(separator: ".").compactMap { Int($0) }
+    guard parts.count >= 2, parts.allSatisfy({ $0 >= 0 }) else { return nil }
+    return parts
 }
 
 func compareVersions(_ a: [Int], _ b: [Int]) -> ComparisonResult {
@@ -292,8 +313,10 @@ func checkForUpdate() {
            let tags = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             let verTags = tags.compactMap { ($0["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.hasPrefix("v") }
             let latest = verTags.max { a, b in
-                let pa = parseVersion(String(a.dropFirst()))
-                let pb = parseVersion(String(b.dropFirst()))
+                guard let pa = parseVersion(String(a.dropFirst())),
+                      let pb = parseVersion(String(b.dropFirst())) else {
+                    return false
+                }
                 return compareVersions(pa, pb) == .orderedAscending
             }
             if let tag = latest {
@@ -307,9 +330,11 @@ func checkForUpdate() {
     }
 
     guard let tag = latestTag, tag.hasPrefix("v") else { return }
-    let curParts = parseVersion(MSLVersion)
-    let tagParts = parseVersion(String(tag.dropFirst()))
-    guard !curParts.isEmpty, !tagParts.isEmpty else { return }
+    // Also skip the check if the local version is the dev placeholder
+    // or if the tag can't be parsed (e.g. pre-release suffixes).
+    guard MSLVersion != "0.0.0-dev",
+          let curParts = parseVersion(MSLVersion),
+          let tagParts = parseVersion(String(tag.dropFirst())) else { return }
     if compareVersions(tagParts, curParts) == .orderedDescending {
         fputs("msl: new version \(tag) available — update with 'brew upgrade msl msld'\n", stderr)
     }
@@ -456,15 +481,22 @@ func main() {
 
     case "fix":
         let exe = resolveBinaryPath()
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0"><dict>\
-        <key>com.apple.security.virtualization</key><true/>\
-        <key>com.apple.security.network.server</key><true/>\
-        <key>com.apple.security.network.client</key><true/>\
-        </dict></plist>
-        """
+        // Read the canonical entitlements file bundled with the binary
+        // instead of duplicating the plist content inline.
+        let plist: String
+        let bundled = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/msl.entitlements")
+        if let data = try? Data(contentsOf: bundled),
+           let str = String(data: data, encoding: .utf8) {
+            plist = str
+        } else if let data = try? Data(contentsOf: URL(fileURLWithPath: "/usr/local/share/msl/msl.entitlements")),
+                  let str = String(data: data, encoding: .utf8) {
+            plist = str
+        } else {
+            fputs("msl: cannot find msl.entitlements — reinstall with 'brew reinstall msl'\n", stderr)
+            exit(1)
+        }
         let tmp = "/tmp/msl-entitlements.plist"
         try? plist.write(toFile: tmp, atomically: true, encoding: .utf8)
         let cs = Process()

@@ -63,7 +63,10 @@ class IPCServer {
         source?.cancel()
         source = nil
         clientLock.lock()
-        for (_, cs) in clientSources { cs.cancel() }
+        for (fd, cs) in clientSources {
+            cs.cancel()
+            close(fd)
+        }
         clientSources.removeAll()
         clientLock.unlock()
         if sock >= 0 { close(sock); sock = -1 }
