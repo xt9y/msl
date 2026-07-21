@@ -67,9 +67,13 @@ func runShell() {
     defer { close(sock) }
 
     var addr = sockaddr_un()
+    let sunPath = "\(dataDir)/msld.shell.sock"
+    let pathMax = MemoryLayout.size(ofValue: addr.sun_path)
+    guard sunPath.utf8.count < pathMax else {
+        fputs("msl: shell socket path too long\n", stderr); exit(1)
+    }
     addr.sun_family = sa_family_t(AF_UNIX)
-    let pathSize = MemoryLayout.size(ofValue: addr.sun_path)
-    _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { strncpy($0, "\(dataDir)/msld.shell.sock", pathSize - 1) }
+    _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { strncpy($0, sunPath, pathMax - 1) }
     let addrSize = MemoryLayout.size(ofValue: addr)
     let rc = withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, socklen_t(addrSize)) }
