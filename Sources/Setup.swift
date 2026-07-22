@@ -359,12 +359,14 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, kee
 
     let tarballPath = "\(tmpdir)/rootfs.tar.gz"
     let mirrors = [
+        "https://github.com/xt9y/MSL/releases/download/v0.7.22/ArchLinuxARM-aarch64-latest-configured.tar.gz",
         "https://github.com/xt9y/MSL/releases/download/rootfs/ArchLinuxARM-aarch64-latest.tar.gz",
         "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
         "https://mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
         "https://eu.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz",
     ]
     let sha256URL = "https://archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz.sha256"
+    let preconfiguredShaURL = "https://github.com/xt9y/MSL/releases/download/v0.7.22/ArchLinuxARM-aarch64-latest-configured.tar.gz.sha256"
     let ar = "/usr/bin/ar"
 
     // Shared GNUPGHOME: import each unique key once, verify all three signatures.
@@ -386,21 +388,23 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, kee
     DispatchQueue.global().async {
         defer { p1.leave() }
         if ProcessInfo.processInfo.environment["MSL_NO_VERIFY"] == nil {
-            guard let shaURL = URL(string: sha256URL) else {
-                phase1Err = MslError("invalid sha256 URL: \(sha256URL)"); return
+            var shaData: Data?
+            if let preURL = URL(string: preconfiguredShaURL) {
+                shaData = try? Data(contentsOf: preURL)
             }
-            do {
-                let shaData = try Data(contentsOf: shaURL)
-                guard let shaStr = String(data: shaData, encoding: .utf8) else {
-                    phase1Err = MslError("sha256 response not valid UTF-8"); return
+            if shaData == nil, let shaURL = URL(string: sha256URL) {
+                do {
+                    shaData = try Data(contentsOf: shaURL)
+                } catch {
+                    print("  warning: could not fetch sha256 checksum — proceeding without verification")
+                    print("           (\(error.localizedDescription))")
                 }
+            }
+            if let data = shaData, let shaStr = String(data: data, encoding: .utf8) {
                 expectedSha = shaStr.split(separator: " ").first.map(String.init)
                 if expectedSha == nil {
-                    phase1Err = MslError("failed to parse sha256 checksum from \(sha256URL)"); return
+                    phase1Err = MslError("failed to parse sha256 checksum")
                 }
-            } catch {
-                print("  warning: could not fetch sha256 checksum — proceeding without verification")
-                print("           (\(error.localizedDescription))")
             }
         }
     }
@@ -571,12 +575,10 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, kee
     // ----------------------------------------------------------------
     // Phase 4 — Parallel: extract & configure rootfs + extract kernel/mods
     // ----------------------------------------------------------------
-    // Kick off kernel extraction on a background thread while configuring rootfs.
+    // Rootfs extraction
     var kernelExtractErr: Error?
+    var preconfigured = false
 
-    let p4 = DispatchGroup()
-
-    // Rootfs extraction + configuration (on main thread)
     print("  Extracting rootfs...")
     fflush(stdout)
     _ = shell("tar xzf '\(tarballPath)' -C '\(tmpdir)' 2>&1")
@@ -586,117 +588,143 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, kee
     }
     try? FileManager.default.removeItem(atPath: tarballPath)
 
-    // Kernel extraction runs in parallel with rootfs configuration
-    p4.enter()
-    DispatchQueue.global().async {
-        defer { p4.leave() }
-        do {
-            let debKernelDir = "\(tmpdir)/deb-kernel"
-            try procOrThrow("/bin/mkdir", ["-p", debKernelDir])
-            try procOrThrow(ar, ["x", kernelDeb], cwd: debKernelDir)
-            let contents = try FileManager.default.contentsOfDirectory(atPath: debKernelDir)
-            let dataTars = contents.filter { $0.hasPrefix("data.tar") }
-            guard !dataTars.isEmpty else {
-                kernelExtractErr = MslError("ar x produced no data.tar.* — malformed deb at \(kernelDeb)"); return
-            }
-            for tarball in dataTars {
-                try procOrThrow("/usr/bin/tar", ["xf", "\(debKernelDir)/\(tarball)", "-C", tmpdir])
-            }
-            try? FileManager.default.removeItem(atPath: kernelDeb)
-
-            let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
-            _ = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null")
+    // Check if the rootfs is pre-configured (marker: /usr/local/bin/msld)
+    if fileExists("\(tmpdir)/usr/local/bin/msld") {
+        preconfigured = true
+        print("  Pre-configured rootfs detected.")
+        // Extract kernel from /boot/vmlinuz-* in the rootfs
+        if let bootItems = try? FileManager.default.contentsOfDirectory(atPath: "\(tmpdir)/boot/"),
+           let vmlinuzFile = bootItems.first(where: { $0.hasPrefix("vmlinuz-") }) {
+            let vmlinuzPath = "\(tmpdir)/boot/\(vmlinuzFile)"
+            _ = shell("gunzip -c '\(vmlinuzPath)' > '\(kernelPath)' 2>/dev/null")
             if !fileExists(kernelPath) {
-                _ = shell("cp '\(vmlinuz)' '\(kernelPath)' 2>/dev/null")
+                _ = shell("cp '\(vmlinuzPath)' '\(kernelPath)' 2>/dev/null")
             }
-            guard fileExists(kernelPath) else {
-                kernelExtractErr = MslError("kernel extraction failed — \(kernelPath) is missing or empty"); return
+            kernelVer = vmlinuzFile.replacingOccurrences(of: "vmlinuz-", with: "")
+        }
+        if !fileExists(kernelPath) {
+            throw MslError("kernel not found in pre-configured rootfs")
+        }
+        print("  Kernel \(kernelVer) extracted.")
+    }
+
+    let p4 = DispatchGroup()
+
+    if !preconfigured {
+        // Kernel extraction
+        p4.enter()
+        DispatchQueue.global().async {
+            defer { p4.leave() }
+            do {
+                let debKernelDir = "\(tmpdir)/deb-kernel"
+                try procOrThrow("/bin/mkdir", ["-p", debKernelDir])
+                try procOrThrow(ar, ["x", kernelDeb], cwd: debKernelDir)
+                let contents = try FileManager.default.contentsOfDirectory(atPath: debKernelDir)
+                let dataTars = contents.filter { $0.hasPrefix("data.tar") }
+                guard !dataTars.isEmpty else {
+                    kernelExtractErr = MslError("ar x produced no data.tar.* — malformed deb at \(kernelDeb)"); return
+                }
+                for tarball in dataTars {
+                    try procOrThrow("/usr/bin/tar", ["xf", "\(debKernelDir)/\(tarball)", "-C", tmpdir])
+                }
+                try? FileManager.default.removeItem(atPath: kernelDeb)
+
+                let vmlinuz = "\(tmpdir)/boot/vmlinuz-\(kernelVer)"
+                _ = shell("gunzip -c '\(vmlinuz)' > '\(kernelPath)' 2>/dev/null")
+                if !fileExists(kernelPath) {
+                    _ = shell("cp '\(vmlinuz)' '\(kernelPath)' 2>/dev/null")
+                }
+                guard fileExists(kernelPath) else {
+                    kernelExtractErr = MslError("kernel extraction failed — \(kernelPath) is missing or empty"); return
+                }
+                print("  Kernel \(kernelVer) extracted.")
+            } catch {
+                kernelExtractErr = error
             }
-            print("  Kernel \(kernelVer) extracted.")
-        } catch {
-            kernelExtractErr = error
+        }
+
+        // Kernel modules extraction
+        p4.enter()
+        DispatchQueue.global().async {
+            defer { p4.leave() }
+            do {
+                let modulesDir = "\(tmpdir)/deb-modules"
+                try procOrThrow("/bin/mkdir", ["-p", modulesDir])
+                try procOrThrow(ar, ["x", modulesDeb], cwd: modulesDir)
+                let modContents = try FileManager.default.contentsOfDirectory(atPath: modulesDir)
+                let modDataTars = modContents.filter { $0.hasPrefix("data.tar") }
+                guard !modDataTars.isEmpty else {
+                    kernelExtractErr = MslError("ar x produced no data.tar.* — malformed modules deb at \(modulesDeb)"); return
+                }
+                for tarball in modDataTars {
+                    try procOrThrow("/usr/bin/tar", ["xf", "\(modulesDir)/\(tarball)", "-C", modulesDir])
+                }
+                try? FileManager.default.removeItem(atPath: modulesDeb)
+
+                let modSrc = "\(modulesDir)/usr/lib/modules"
+                let modSrcFallback = "\(modulesDir)/lib/modules"
+                if FileManager.default.fileExists(atPath: modSrc) {
+                    shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrc)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
+                } else if FileManager.default.fileExists(atPath: modSrcFallback) {
+                    shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrcFallback)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
+                }
+                let modTarget = "\(tmpdir)/usr/lib/modules/\(kernelVer)"
+                let vsockDir = "\(modTarget)/kernel/net/vmw_vsock"
+                let ext: String
+                if fileExists("\(vsockDir)/vsock.ko.zst") {
+                    ext = ".ko.zst"
+                } else if fileExists("\(vsockDir)/vsock.ko") {
+                    ext = ".ko"
+                } else {
+                    ext = ".ko"
+                }
+                let dep = """
+                kernel/net/vmw_vsock/vsock.ko\(ext):
+                kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext): kernel/net/vmw_vsock/vsock.ko\(ext)
+                kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko\(ext): kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext)
+
+                """
+                shell("mkdir -p '\(modTarget)' 2>/dev/null")
+                try? dep.write(toFile: "\(modTarget)/modules.dep", atomically: true, encoding: .utf8)
+                try? "\n".write(toFile: "\(modTarget)/modules.alias", atomically: true, encoding: .utf8)
+                try? "\n".write(toFile: "\(modTarget)/modules.symbols", atomically: true, encoding: .utf8)
+                try? "\n".write(toFile: "\(modTarget)/modules.softdep", atomically: true, encoding: .utf8)
+                let vsockConf = "vsock\nvmw_vsock_virtio_transport\n"
+                try? vsockConf.write(toFile: "\(tmpdir)/etc/modules-load.d/vsock.conf", atomically: true, encoding: .utf8)
+                print("  Kernel modules installed.")
+                try? FileManager.default.removeItem(atPath: modulesDir)
+            } catch {
+                kernelExtractErr = error
+            }
         }
     }
 
-    p4.enter()
-    DispatchQueue.global().async {
-        defer { p4.leave() }
-        do {
-            let modulesDir = "\(tmpdir)/deb-modules"
-            try procOrThrow("/bin/mkdir", ["-p", modulesDir])
-            try procOrThrow(ar, ["x", modulesDeb], cwd: modulesDir)
-            let modContents = try FileManager.default.contentsOfDirectory(atPath: modulesDir)
-            let modDataTars = modContents.filter { $0.hasPrefix("data.tar") }
-            guard !modDataTars.isEmpty else {
-                kernelExtractErr = MslError("ar x produced no data.tar.* — malformed modules deb at \(modulesDeb)"); return
-            }
-            for tarball in modDataTars {
-                try procOrThrow("/usr/bin/tar", ["xf", "\(modulesDir)/\(tarball)", "-C", modulesDir])
-            }
-            try? FileManager.default.removeItem(atPath: modulesDeb)
+    if !preconfigured {
+        // Configure system while kernel/modules extract in parallel
+        print("  Configuring system...")
+        print("  WARNING: root account has no password. Do not enable SSH")
+        print("           without setting a password inside the VM first.")
+        fflush(stdout)
+        try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/shadow"])
+        try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/passwd"])
+        shell("ln -sf /dev/null '\(tmpdir)/etc/systemd/system/systemd-firstboot.service'")
+        shell("ln -sf ../usr/share/zoneinfo/UTC '\(tmpdir)/etc/localtime'")
+        try? FileManager.default.removeItem(atPath: "\(tmpdir)/etc/machine-id")
+        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root/.gnupg", withIntermediateDirectories: true)
+        let bashrc = "export HOME=/root\nexport TERM=xterm-256color\n"
+        try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
+        let bashProfile = "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
+        try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
+        let environment = "LIBGL_ALWAYS_SOFTWARE=1\n__GLX_VENDOR_LIBRARY_NAME=mesa\nVK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nLP_NUM_THREADS=\(cpuCores)\nXDG_RUNTIME_DIR=/run/user/0\n"
+        try environment.write(toFile: "\(tmpdir)/etc/environment", atomically: true, encoding: .utf8)
+        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/profile.d", withIntermediateDirectories: true)
+        let mesaProfile = "export LIBGL_ALWAYS_SOFTWARE=1\nexport __GLX_VENDOR_LIBRARY_NAME=mesa\nexport VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nexport LP_NUM_THREADS=\(cpuCores)\nexport XDG_RUNTIME_DIR=/run/user/0\n"
+        try mesaProfile.write(toFile: "\(tmpdir)/etc/profile.d/msl-mesa.sh", atomically: true, encoding: .utf8)
+        try? FileManager.default.createDirectory(atPath: "\(tmpdir)/run/user/0", withIntermediateDirectories: true)
 
-            let modSrc = "\(modulesDir)/usr/lib/modules"
-            let modSrcFallback = "\(modulesDir)/lib/modules"
-            if FileManager.default.fileExists(atPath: modSrc) {
-                shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrc)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
-            } else if FileManager.default.fileExists(atPath: modSrcFallback) {
-                shell("rm -rf '\(tmpdir)/usr/lib/modules/\(kernelVer)' 2>/dev/null; cp -r '\(modSrcFallback)/\(kernelVer)' '\(tmpdir)/usr/lib/modules/' 2>/dev/null || true")
-            }
-            let modTarget = "\(tmpdir)/usr/lib/modules/\(kernelVer)"
-            let vsockDir = "\(modTarget)/kernel/net/vmw_vsock"
-            let ext: String
-            if fileExists("\(vsockDir)/vsock.ko.zst") {
-                ext = ".ko.zst"
-            } else if fileExists("\(vsockDir)/vsock.ko") {
-                ext = ".ko"
-            } else {
-                ext = ".ko"
-            }
-            let dep = """
-            kernel/net/vmw_vsock/vsock.ko\(ext):
-            kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext): kernel/net/vmw_vsock/vsock.ko\(ext)
-            kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko\(ext): kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko\(ext)
-
-            """
-            shell("mkdir -p '\(modTarget)' 2>/dev/null")
-            try? dep.write(toFile: "\(modTarget)/modules.dep", atomically: true, encoding: .utf8)
-            try? "\n".write(toFile: "\(modTarget)/modules.alias", atomically: true, encoding: .utf8)
-            try? "\n".write(toFile: "\(modTarget)/modules.symbols", atomically: true, encoding: .utf8)
-            try? "\n".write(toFile: "\(modTarget)/modules.softdep", atomically: true, encoding: .utf8)
-            let vsockConf = "vsock\nvmw_vsock_virtio_transport\n"
-            try? vsockConf.write(toFile: "\(tmpdir)/etc/modules-load.d/vsock.conf", atomically: true, encoding: .utf8)
-            print("  Kernel modules installed.")
-            try? FileManager.default.removeItem(atPath: modulesDir)
-        } catch {
-            kernelExtractErr = error
-        }
-    }
-
-    // Configure system while kernel/modules extract in parallel
-    print("  Configuring system...")
-    print("  WARNING: root account has no password. Do not enable SSH")
-    print("           without setting a password inside the VM first.")
-    fflush(stdout)
-    try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/shadow"])
-    try procOrThrow("/usr/bin/sed", ["-i", "", "s|^root:.*|root::0:0:root:/root:/bin/bash|", "\(tmpdir)/etc/passwd"])
-    shell("ln -sf /dev/null '\(tmpdir)/etc/systemd/system/systemd-firstboot.service'")
-    shell("ln -sf ../usr/share/zoneinfo/UTC '\(tmpdir)/etc/localtime'")
-    try? FileManager.default.removeItem(atPath: "\(tmpdir)/etc/machine-id")
-    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root", withIntermediateDirectories: true)
-    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/root/.gnupg", withIntermediateDirectories: true)
-    let bashrc = "export HOME=/root\nexport TERM=xterm-256color\n"
-    try bashrc.write(toFile: "\(tmpdir)/root/.bashrc", atomically: true, encoding: .utf8)
-    let bashProfile = "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
-    try bashProfile.write(toFile: "\(tmpdir)/root/.bash_profile", atomically: true, encoding: .utf8)
-    let environment = "LIBGL_ALWAYS_SOFTWARE=1\n__GLX_VENDOR_LIBRARY_NAME=mesa\nVK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nLP_NUM_THREADS=\(cpuCores)\nXDG_RUNTIME_DIR=/run/user/0\n"
-    try environment.write(toFile: "\(tmpdir)/etc/environment", atomically: true, encoding: .utf8)
-    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/profile.d", withIntermediateDirectories: true)
-    let mesaProfile = "export LIBGL_ALWAYS_SOFTWARE=1\nexport __GLX_VENDOR_LIBRARY_NAME=mesa\nexport VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json\nexport LP_NUM_THREADS=\(cpuCores)\nexport XDG_RUNTIME_DIR=/run/user/0\n"
-    try mesaProfile.write(toFile: "\(tmpdir)/etc/profile.d/msl-mesa.sh", atomically: true, encoding: .utf8)
-    try? FileManager.default.createDirectory(atPath: "\(tmpdir)/run/user/0", withIntermediateDirectories: true)
-
-    try FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/systemd/system", withIntermediateDirectories: true)
-    let fwService = """
+        try FileManager.default.createDirectory(atPath: "\(tmpdir)/etc/systemd/system", withIntermediateDirectories: true)
+        let fwService = """
 [Unit]
 Description=MSL guest firewall
 After=network.target
@@ -712,9 +740,95 @@ ExecStop=/usr/bin/iptables -F INPUT
 [Install]
 WantedBy=multi-user.target
 """
-    try fwService.write(toFile: "\(tmpdir)/etc/systemd/system/msl-firewall.service", atomically: true, encoding: .utf8)
-    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-firewall.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-firewall.service'")
+        try fwService.write(toFile: "\(tmpdir)/etc/systemd/system/msl-firewall.service", atomically: true, encoding: .utf8)
+        try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-firewall.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-firewall.service'")
 
+        if let msld = msldPath {
+            try procOrThrow("/bin/mkdir", ["-p", "\(tmpdir)/usr/local/bin"])
+            try procOrThrow("/bin/cp", ["-L", msld, "\(tmpdir)/usr/local/bin/msld"])
+            try procOrThrow("/bin/chmod", ["+x", "\(tmpdir)/usr/local/bin/msld"])
+            print("  Msld daemon embedded.")
+        } else {
+            fputs("  Warning: msld not found — run 'brew install msld' first\n", stderr)
+        }
+
+        let loadModulesScript = """
+        #!/bin/sh
+        echo "msld-wrapper: starting, uname=$(uname -r)" > /dev/kmsg 2>/dev/null
+        modprobe vsock 2>/dev/null && modprobe vmw_vsock_virtio_transport 2>/dev/null
+        rc=$?
+        if [ $rc -eq 0 ]; then
+            echo "msld-wrapper: modprobe success" > /dev/kmsg 2>/dev/null
+        else
+            echo "msld-wrapper: modprobe failed, trying insmod" > /dev/kmsg 2>/dev/null
+        fi
+        if ! lsmod 2>/dev/null | grep -q vsock; then
+            echo "msld-wrapper: vsock not loaded, attempting insmod" > /dev/kmsg 2>/dev/null
+            for m in vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport; do
+                for d in /lib/modules/*/kernel/net/vmw_vsock /usr/lib/modules/*/kernel/net/vmw_vsock; do
+                    for ext in .ko.zst .ko; do
+                        f="$d/$m$ext"
+                        if [ -f "$f" ]; then
+                            echo "msld-wrapper: insmod $f" > /dev/kmsg 2>/dev/null
+                            insmod "$f" 2>/dev/null
+                            if [ $? -eq 0 ]; then
+                                echo "msld-wrapper: insmod $m success" > /dev/kmsg 2>/dev/null
+                                break 2
+                            fi
+                        fi
+                    done
+                done
+            done
+        fi
+        echo "msld-wrapper: starting msld" > /dev/kmsg 2>/dev/null
+        exec /usr/local/bin/msld "$@"
+        """
+        let loadScriptPath = "\(tmpdir)/usr/local/bin/msld-wrapper.sh"
+        try loadModulesScript.write(toFile: loadScriptPath, atomically: true, encoding: .utf8)
+        shell("chmod +x '\(loadScriptPath)'")
+
+        let svc = """
+        [Unit]
+        Description=msl Guest Daemon
+        After=network.target
+
+        [Service]
+        ExecStart=/usr/local/bin/msld-wrapper.sh
+        WorkingDirectory=/root
+        Restart=always
+        RestartSec=5
+
+        [Install]
+        WantedBy=multi-user.target
+        """
+        try svc.write(toFile: "\(tmpdir)/etc/systemd/system/msld.service", atomically: true, encoding: .utf8)
+        try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msld.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msld.service'")
+
+        let pacmanKeySvc = """
+        [Unit]
+        Description=Initialize pacman keyring (msl first-boot)
+        After=network.target
+        Wants=network.target
+        ConditionPathExists=!/var/lib/msl-pacman-key.done
+
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft mesa vulkan-swrast vulkan-icd-loader vulkan-tools mesa-utils && pacman -Syy && modprobe nf_tables 2>/dev/null; modprobe nf_conntrack 2>/dev/null; modprobe xt_conntrack 2>/dev/null; systemctl enable --now msl-firewall || true; touch /var/lib/msl-pacman-key.done'
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
+        """
+        try pacmanKeySvc.write(toFile: "\(tmpdir)/etc/systemd/system/msl-pacman-key.service", atomically: true, encoding: .utf8)
+        try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-pacman-key.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-pacman-key.service'")
+        shell("mkdir -p '\(tmpdir)/var/lib'")
+    }
+
+    // Wait for kernel/modules extraction to complete
+    p4.wait()
+    if let e = kernelExtractErr { throw e }
+
+    // Token (always needed, even for pre-configured)
     let tokenPath = "\(dataDir)/token"
     if keepDisk, let existing = try? Data(contentsOf: URL(fileURLWithPath: tokenPath)), existing.count == 32 {
     } else {
@@ -730,90 +844,6 @@ WantedBy=multi-user.target
         try tokenData.write(to: URL(fileURLWithPath: "\(tmpdir)/etc/msld-token"), options: .atomic)
         shell("chmod 600 '\(tmpdir)/etc/msld-token'")
     }
-
-    if let msld = msldPath {
-        try procOrThrow("/bin/mkdir", ["-p", "\(tmpdir)/usr/local/bin"])
-        try procOrThrow("/bin/cp", ["-L", msld, "\(tmpdir)/usr/local/bin/msld"])
-        try procOrThrow("/bin/chmod", ["+x", "\(tmpdir)/usr/local/bin/msld"])
-        print("  Msld daemon embedded.")
-    } else {
-        fputs("  Warning: msld not found — run 'brew install msld' first\n", stderr)
-    }
-
-    let loadModulesScript = """
-    #!/bin/sh
-    echo "msld-wrapper: starting, uname=$(uname -r)" > /dev/kmsg 2>/dev/null
-    modprobe vsock 2>/dev/null && modprobe vmw_vsock_virtio_transport 2>/dev/null
-    rc=$?
-    if [ $rc -eq 0 ]; then
-        echo "msld-wrapper: modprobe success" > /dev/kmsg 2>/dev/null
-    else
-        echo "msld-wrapper: modprobe failed, trying insmod" > /dev/kmsg 2>/dev/null
-    fi
-    if ! lsmod 2>/dev/null | grep -q vsock; then
-        echo "msld-wrapper: vsock not loaded, attempting insmod" > /dev/kmsg 2>/dev/null
-        for m in vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport; do
-            for d in /lib/modules/*/kernel/net/vmw_vsock /usr/lib/modules/*/kernel/net/vmw_vsock; do
-                for ext in .ko.zst .ko; do
-                    f="$d/$m$ext"
-                    if [ -f "$f" ]; then
-                        echo "msld-wrapper: insmod $f" > /dev/kmsg 2>/dev/null
-                        insmod "$f" 2>/dev/null
-                        if [ $? -eq 0 ]; then
-                            echo "msld-wrapper: insmod $m success" > /dev/kmsg 2>/dev/null
-                            break 2
-                        fi
-                    fi
-                done
-            done
-        done
-    fi
-    echo "msld-wrapper: starting msld" > /dev/kmsg 2>/dev/null
-    exec /usr/local/bin/msld "$@"
-    """
-    let loadScriptPath = "\(tmpdir)/usr/local/bin/msld-wrapper.sh"
-    try loadModulesScript.write(toFile: loadScriptPath, atomically: true, encoding: .utf8)
-    shell("chmod +x '\(loadScriptPath)'")
-
-    let svc = """
-    [Unit]
-    Description=msl Guest Daemon
-    After=network.target
-
-    [Service]
-    ExecStart=/usr/local/bin/msld-wrapper.sh
-    WorkingDirectory=/root
-    Restart=always
-    RestartSec=5
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-    try svc.write(toFile: "\(tmpdir)/etc/systemd/system/msld.service", atomically: true, encoding: .utf8)
-    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msld.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msld.service'")
-
-    let pacmanKeySvc = """
-    [Unit]
-    Description=Initialize pacman keyring (msl first-boot)
-    After=network.target
-    Wants=network.target
-    ConditionPathExists=!/var/lib/msl-pacman-key.done
-
-    [Service]
-    Type=oneshot
-    ExecStart=/bin/sh -c 'rm -f /var/lib/pacman/db.lck && chown -R root:root /root/.gnupg 2>/dev/null && chmod 700 /root/.gnupg 2>/dev/null && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Sy --noconfirm archlinuxarm-keyring ncurses iptables-nft mesa vulkan-swrast vulkan-icd-loader vulkan-tools mesa-utils && pacman -Syy && modprobe nf_tables 2>/dev/null; modprobe nf_conntrack 2>/dev/null; modprobe xt_conntrack 2>/dev/null; systemctl enable --now msl-firewall || true; touch /var/lib/msl-pacman-key.done'
-    RemainAfterExit=yes
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-    try pacmanKeySvc.write(toFile: "\(tmpdir)/etc/systemd/system/msl-pacman-key.service", atomically: true, encoding: .utf8)
-    try shellOrThrow("mkdir -p '\(tmpdir)/etc/systemd/system/multi-user.target.wants' && ln -sf /etc/systemd/system/msl-pacman-key.service '\(tmpdir)/etc/systemd/system/multi-user.target.wants/msl-pacman-key.service'")
-    shell("mkdir -p '\(tmpdir)/var/lib'")
-
-    // Wait for kernel/modules extraction to complete
-    p4.wait()
-    if let e = kernelExtractErr { throw e }
 
     shell("chmod -R +r '\(tmpdir)/usr/local/bin' '\(tmpdir)/etc' '\(tmpdir)/boot' '\(tmpdir)/lib' 2>/dev/null")
 
