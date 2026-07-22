@@ -817,9 +817,8 @@ func ensureDisplayBridge() {
 
     // Ensure socat is installed
     if shell("which socat >/dev/null 2>&1", quiet: true) != 0 {
-        print("  Installing socat...")
-        fflush(stdout)
-        shell("brew install socat 2>/dev/null", quiet: true)
+        fputs("MSL: Installing socat for X11 forwarding...\n", stderr)
+        shell("HOMEBREW_NO_INTERACTIVE=1 brew install socat </dev/null 2>/dev/null", quiet: true)
     }
     if shell("which socat >/dev/null 2>&1", quiet: true) != 0 {
         fputs("  warning: socat not found — GUI apps won't display\n", stderr)

@@ -302,6 +302,9 @@ func startDaemonInBackground() {
     task.standardInput = FileHandle(forReadingAtPath: "/dev/null")
     task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
     task.standardError = FileHandle(forWritingAtPath: "/dev/null")
+    var env = ProcessInfo.processInfo.environment
+    env["HOMEBREW_NO_INTERACTIVE"] = "1"
+    task.environment = env
     do {
         try task.run()
     } catch {
