@@ -284,7 +284,7 @@ struct VMConfig: Codable {
     }
 }
 
-func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) throws {
+func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, keepDisk: Bool = false) throws {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
     let dataDir = "\(home)/.msl"
     let kernelPath = "\(dataDir)/kernel"
@@ -292,7 +292,7 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
 
     try FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
-    if fileExists(kernelPath) && isValidExt4(diskPath) {
+    if !keepDisk && fileExists(kernelPath) && isValidExt4(diskPath) {
         // Warn if the user passed flags that would be silently ignored.
         if diskSizeGB != 8 || ramSizeGB != 2 || cpuCores != 2 {
             print("MSL: Already configured — flags ignored (re-run with --force to re-create)")
@@ -306,7 +306,9 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2) thr
     try checkDiskSpace(requiredGB: diskSizeGB + 2, at: NSTemporaryDirectory())
 
     try? FileManager.default.removeItem(atPath: kernelPath)
-    try? FileManager.default.removeItem(atPath: diskPath)
+    if !keepDisk {
+        try? FileManager.default.removeItem(atPath: diskPath)
+    }
 
     let mke2fs = try ensureMke2fs()
     ensureXQuartz()
@@ -686,14 +688,18 @@ WantedBy=multi-user.target
     // over the entire rootfs which could alter permissions on sensitive files.
     shell("chmod -R +r '\(tmpdir)/usr/local/bin' '\(tmpdir)/etc' '\(tmpdir)/boot' '\(tmpdir)/lib' 2>/dev/null")
 
-    print("  Creating disk image (\(diskSizeGB)GB)...")
-    fflush(stdout)
-    // Strip setuid/setgid bits and ensure readability — mke2fs on macOS
-    // cannot copy files with restricted permissions when running as
-    // a non-root user.
-    shell("chmod -R a-s,u+r '\(tmpdir)' 2>/dev/null || true")
-    try procOrThrow(mke2fs, ["-t", "ext4", "-d", tmpdir, diskPath, "\(diskSizeGB)G"])
-    print("  Disk image: \(diskPath)")
+    if !keepDisk {
+        print("  Creating disk image (\(diskSizeGB)GB)...")
+        fflush(stdout)
+        // Strip setuid/setgid bits and ensure readability — mke2fs on macOS
+        // cannot copy files with restricted permissions when running as
+        // a non-root user.
+        shell("chmod -R a-s,u+r '\(tmpdir)' 2>/dev/null || true")
+        try procOrThrow(mke2fs, ["-t", "ext4", "-d", tmpdir, diskPath, "\(diskSizeGB)G"])
+        print("  Disk image: \(diskPath)")
+    } else {
+        print("  Keeping existing disk image.")
+    }
 
     let config = VMConfig(diskSizeGB: diskSizeGB, ramSizeGB: ramSizeGB, cpuCores: cpuCores)
     config.save(to: dataDir)
