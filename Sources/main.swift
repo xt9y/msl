@@ -567,11 +567,13 @@ func main() {
             }
         }
 
-        // 2. Delete everything in .msl except arch.img
+        // 2. Delete everything in .msl except arch.img and the auth token.
+        //    The token is paired with the guest inside arch.img; regenerating
+        //    only the host side would break auth.
         let fileManager = FileManager.default
         if let items = try? fileManager.contentsOfDirectory(atPath: dataDir) {
             for item in items {
-                if item == "arch.img" { continue }
+                if item == "arch.img" || item == "token" { continue }
                 let path = "\(dataDir)/\(item)"
                 try? fileManager.removeItem(atPath: path)
             }

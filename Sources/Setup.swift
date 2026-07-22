@@ -424,17 +424,24 @@ WantedBy=multi-user.target
     // the host (~/.msl/token) and the guest rootfs (/etc/msld-token).
     // Every VSOCK connection must send this token before the mode byte,
     // preventing a rogue guest process from impersonating msld.
-    var tokenBytes = [UInt8](repeating: 0, count: 32)
-    let randomFD = open("/dev/urandom", O_RDONLY)
-    if randomFD >= 0 {
-        _ = read(randomFD, &tokenBytes, 32)
-        close(randomFD)
+    // When keepDisk is true, preserve the existing host token (the guest
+    // inside arch.img still has the matching value).
+    let tokenPath = "\(dataDir)/token"
+    if keepDisk, let existing = try? Data(contentsOf: URL(fileURLWithPath: tokenPath)), existing.count == 32 {
+        // Keep existing token — guest inside preserved arch.img still has it
+    } else {
+        var tokenBytes = [UInt8](repeating: 0, count: 32)
+        let randomFD = open("/dev/urandom", O_RDONLY)
+        if randomFD >= 0 {
+            _ = read(randomFD, &tokenBytes, 32)
+            close(randomFD)
+        }
+        let tokenData = Data(tokenBytes)
+        try tokenData.write(to: URL(fileURLWithPath: tokenPath), options: .atomic)
+        shell("chmod 600 '\(tokenPath)'")
+        try tokenData.write(to: URL(fileURLWithPath: "\(tmpdir)/etc/msld-token"), options: .atomic)
+        shell("chmod 600 '\(tmpdir)/etc/msld-token'")
     }
-    let tokenData = Data(tokenBytes)
-    try tokenData.write(to: URL(fileURLWithPath: "\(dataDir)/token"), options: .atomic)
-    shell("chmod 600 '\(dataDir)/token'")
-    try tokenData.write(to: URL(fileURLWithPath: "\(tmpdir)/etc/msld-token"), options: .atomic)
-    shell("chmod 600 '\(tmpdir)/etc/msld-token'")
 
     if let msld = msldPath {
         try procOrThrow("/bin/mkdir", ["-p", "\(tmpdir)/usr/local/bin"])
