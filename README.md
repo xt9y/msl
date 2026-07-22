@@ -10,12 +10,10 @@ brew tap xt9y/MSL
 brew install msl msld
 ```
 
-
 ## Requirements
 
 - **macOS 14+** (Sonoma) with Apple Silicon (M1/M2/M3/M4)
 - [Zig](https://ziglang.org/download/) (`brew install zig`) for building from source
-
 
 ## Setup
 
@@ -36,7 +34,6 @@ msl setup --disk-size 16 --ram-size 4 --cpu-cores 4
 
 Configuration is stored in `~/.msl/config.json`.
 
-
 ## Usage
 
 ```bash
@@ -49,7 +46,6 @@ msl exec "cmd"   # run a command and print output
 msl update       # download latest kernel/modules/Arch image
 msl fix          # re-sign entitlements (fixes "permission denied")
 ```
-
 
 ## GUI applications
 
@@ -80,26 +76,6 @@ Apps compiled with an EGL backend (bypassing GLX) render via Mesa's software ras
 msl exec "GLFW_BACKEND=egl ./myapp"
 ```
 
-### Chromium
-
-```bash
-msl exec "pacman -S --noconfirm chromium"
-msl exec "chromium --no-sandbox"
-```
-
-(The `--no-sandbox` flag is needed because Chromium's sandbox is incompatible with the VM's root-only environment.)
-
-### Environment variables set in the guest
-
-| Variable | Value | Purpose |
-|---|---|---|
-| `DISPLAY` | `{gateway}:0` | Forwarded X11 display |
-| `LIBGL_ALWAYS_SOFTWARE` | `1` | Force Mesa software rendering |
-| `VK_ICD_FILENAMES` | `/usr/share/vulkan/icd.d/lvp_icd.json` | Use llvmpipe Vulkan ICD |
-| `LP_NUM_THREADS` | (CPU count) | llvmpipe thread count |
-| `XDG_RUNTIME_DIR` | `/run/user/0` | Mesa/Vulkan runtime dir |
-
-
 ## Build from source
 
 ```bash
@@ -107,7 +83,6 @@ make
 ```
 
 Requires: Xcode 15+, Xcode Command Line Tools, and `zig` (for cross-compiling the guest daemon).
-
 
 ## Uninstall
 
@@ -117,28 +92,21 @@ brew uninstall msl msld  # removes the binaries
 brew untap xt9y/MSL      # removes the tap
 ```
 
-
 ## Known Limitations
 
 ### Works
 
-- **Plain X11 apps** (`xeyes`, terminal emulators, basic GUI toolkits) — yes, via the XQuartz TCP bridge.
-- **Vulkan (software)** — **yes**, Mesa `llvmpipe` provides a fully-conformant Vulkan 1.4 implementation
-  (CPU-only, ~1–5 FPS). See [GUI applications](#gui-applications) above.
-- **EGL-native GL** — **yes**, apps compiled with an EGL backend bypass GLX and render via Mesa's
-  software rasterizer. This is the recommended path for GLFW/GLUT applications.
+- **Plain X11 apps** (`xeyes`, terminal emulators, basic GUI toolkits). 
+- **Vulkan (software)** using Mesa `llvmpipe`.
+- **EGL-native GL** apps compiled with an EGL backend bypass GLX and render via Mesa's software rasterizer.
 - **`msl shell`** — interactive PTY shell with job control, resize handling, DISPLAY forwarding.
 - **`msl exec`** — run commands, capture stdout/stderr + exit code.
-- **VSOCK auth** — 32-byte random token authenticates every connection between host and guest.
 
 ### Not working
 
 - **GLX (OpenGL over X11)** — XQuartz does not implement the GLX server extension, so any app
   using legacy GLX (`glxgears`, unmodified GLUT, etc.) will fail with `GLXBadContext`.
-  *Fix:* recompile the app with an EGL backend, or use the Zink translation layer
-  (`MESA_LOADER_DRIVER_OVERRIDE=zink` — experimental, not all apps work).
-- **MIT-SHM / DRI3 / Present** — shared-memory frame handoff is disabled by Xlib over a
-  non-local (`:0.0` TCP) display. Renders fall back to `PutImage`.
+  *Fix:* recompile the app with an EGL backend.
 - **Hardware GPU acceleration** — Apple Silicon has no GPU passthrough mechanism.
   `/dev/dri` doesn't exist in the guest. All rendering is CPU-based.
 
@@ -146,7 +114,7 @@ brew untap xt9y/MSL      # removes the tap
 
 - True GPU passthrough / virtio-gpu 3D (Venus/virglrenderer → MoltenVK) — requires
   custom device support that `Virtualization.framework` doesn't expose.
-- Indirect GLX hardware acceleration through XQuartz — GLX indirect support has been
+- Indirect GLX hardware acceleration through XQuartz, GLX indirect support has been
   scaled back in modern X servers for security reasons.
 - Screen mirroring / RDP-style remote desktop of the whole guest — msl targets native
   per-window integration via X11.
@@ -157,7 +125,6 @@ brew untap xt9y/MSL      # removes the tap
 - Multiple simultaneous VMs / named instances.
 - Snapshotting or pausing VM state instead of full shutdown/boot.
 - Port forwarding helpers for guest network services.
-
 
 ## License
 
