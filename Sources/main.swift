@@ -299,6 +299,7 @@ func startDaemonInBackground() {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: exe)
     task.arguments = ["--start-daemon"]
+    task.standardInput = FileHandle(forReadingAtPath: "/dev/null")
     task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
     task.standardError = FileHandle(forWritingAtPath: "/dev/null")
     do {
