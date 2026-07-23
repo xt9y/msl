@@ -102,7 +102,7 @@ func runShell() {
         sendWinsize(sock: sock)
         tcgetattr(STDIN_FILENO, &savedTermios)
         var raw = savedTermios
-        raw.c_iflag &= ~tcflag_t(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | IXON)
+        raw.c_iflag &= ~tcflag_t(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON)
         raw.c_oflag &= ~tcflag_t(OPOST)
         raw.c_lflag &= ~tcflag_t(ECHO | ECHONL | ICANON | ISIG | IEXTEN)
         raw.c_cflag &= ~tcflag_t(CSIZE | PARENB)
