@@ -1,2 +1,2 @@
 import Foundation
-let MSLVersion = "0.7.23"
+let MSLVersion = "0.7.24"

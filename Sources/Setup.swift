@@ -322,7 +322,7 @@ struct VMConfig: Codable {
     }
 }
 
-func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, keepDisk: Bool = false) throws {
+func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, keepDisk: Bool = false, force: Bool = false) throws {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
     let dataDir = "\(home)/.msl"
     let kernelPath = "\(dataDir)/kernel"
@@ -330,14 +330,14 @@ func ensureSetup(diskSizeGB: Int = 8, ramSizeGB: Int = 2, cpuCores: Int = 2, kee
 
     try FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
-    if !keepDisk && fileExists(kernelPath) && isValidExt4(diskPath) {
+    if !keepDisk && !force && fileExists(kernelPath) && isValidExt4(diskPath) {
         if diskSizeGB != 8 || ramSizeGB != 2 || cpuCores != 2 {
             print("MSL: Already configured — flags ignored (re-run with --force to re-create)")
         }
         return
     }
 
-    print("MSL setup\n")
+    print("MSL setup\(force ? " (--force)" : "")\n")
 
     try checkDiskSpace(requiredGB: diskSizeGB + 2, at: dataDir)
     try checkDiskSpace(requiredGB: diskSizeGB + 2, at: NSTemporaryDirectory())

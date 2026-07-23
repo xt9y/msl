@@ -199,21 +199,23 @@ func printHelp() {
     print("  --disk-size N    Disk image size in GB (default: 8)")
     print("  --ram-size  N    RAM size in GB (default: 2)")
     print("  --cpu-cores N    Number of vCPUs (default: 2)")
+    print("  --force          Re-create disk image even if already configured")
 }
 
-func parseSetupFlags(_ args: [String]) -> (Int, Int, Int) {
-    var diskSize = 8, ramSize = 2, cpuCores = 2
+func parseSetupFlags(_ args: [String]) -> (Int, Int, Int, Bool) {
+    var diskSize = 8, ramSize = 2, cpuCores = 2, force = false
     var i = 2
     while i < args.count {
         switch args[i] {
         case "--disk-size":  if i + 1 < args.count, let v = Int(args[i + 1]) { diskSize = v; i += 1 }
         case "--ram-size":   if i + 1 < args.count, let v = Int(args[i + 1]) { ramSize = v; i += 1 }
         case "--cpu-cores":  if i + 1 < args.count, let v = Int(args[i + 1]) { cpuCores = v; i += 1 }
+        case "--force":      force = true
         default:             break
         }
         i += 1
     }
-    return (diskSize, ramSize, cpuCores)
+    return (diskSize, ramSize, cpuCores, force)
 }
 
 func resolveBinaryPath() -> String {
@@ -435,9 +437,9 @@ func main() {
         print("MSL \(MSLVersion)")
 
     case "setup":
-        let (ds, rs, cc) = parseSetupFlags(args)
+        let (ds, rs, cc, force) = parseSetupFlags(args)
         do {
-            try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
+            try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc, force: force)
         } catch {
             fputs("\(error.localizedDescription)\n", stderr)
             mslLog("setup failed: \(error.localizedDescription)")
@@ -445,7 +447,7 @@ func main() {
         }
 
     case "update":
-        let (ds, rs, cc) = parseSetupFlags(args)
+        let (ds, rs, cc, _) = parseSetupFlags(args)
         do {
             try runUpdate(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
         } catch {
@@ -455,9 +457,9 @@ func main() {
 
     case "start":
         if !isSetupComplete() {
-            let (ds, rs, cc) = parseSetupFlags(args)
+            let (ds, rs, cc, force) = parseSetupFlags(args)
             do {
-                try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc)
+                try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc, force: force)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
                 exit(1)
@@ -588,7 +590,7 @@ func main() {
         }
 
         // 3. Re-run setup keeping the disk
-        let (ds, rs, cc) = parseSetupFlags(args)
+        let (ds, rs, cc, _) = parseSetupFlags(args)
         do {
             try ensureSetup(diskSizeGB: ds, ramSizeGB: rs, cpuCores: cc, keepDisk: true)
         } catch {
