@@ -18,7 +18,7 @@ brew tap xt9y/MSL
 brew install msl msld
 ```
 
-Or manually via install.sh inside the repo (can just be extracted, has do dependencies inside the repo)
+Another One-Liner, manually via install.sh 
 ```bash
 curl -L https://raw.githubusercontent.com/xt9y/msl/main/install.sh | sh
 ```
