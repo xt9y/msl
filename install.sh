@@ -93,9 +93,12 @@ else
     ok "Homebrew installed"
 fi
 
-# --- Step 3: Tap + install MSL ---
+# --- Step 3: Tap + trust + install MSL ---
 info "Tapping ${BREW_TAP}..."
 brew tap "$BREW_TAP"
+
+info "Trusting ${BREW_TAP}..."
+brew trust --tap "$BREW_TAP" 2>/dev/null || true
 
 info "Installing MSL formulae..."
 brew install $FORMULAE
