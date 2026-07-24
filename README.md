@@ -18,6 +18,11 @@ brew tap xt9y/MSL
 brew install msl msld
 ```
 
+Or manually via install.sh inside the repo (can just be extracted, has do dependencies inside the repo)
+```bash
+curl -L https://raw.githubusercontent.com/xt9y/msl/main/install.sh | sh
+```
+
 ## Requirements
 
 - **macOS 14+** (Sonoma) with Apple Silicon (M1/M2/M3/M4)
